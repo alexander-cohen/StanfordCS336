@@ -50,7 +50,8 @@ def find_chunk_boundaries(
 
 
 ## Usage
-with open(..., "rb") as f:
+test_corpus = """/Users/alexandercohen/Documents/Research After 2025/Stanford CS336/CS336-Spring-2026/assignments/assignment1-basics/text/test_corpus.txt"""
+with open(test_corpus, "rb") as f:
     num_processes = 4
     boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
 

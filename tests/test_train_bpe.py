@@ -4,6 +4,7 @@ import time
 from .adapters import run_train_bpe
 from .common import FIXTURES_PATH, gpt2_bytes_to_unicode
 
+import pprint
 
 def test_train_bpe_speed():
     """
@@ -58,6 +59,16 @@ def test_train_bpe():
         }
     # Rather than checking that the vocabs exactly match (since they could
     # have been constructed differently), we'll make sure that the vocab keys and values match
+
+    # print("Vocab - Ref Vocab:")
+    # pprint.pp(set(vocab.values()) - set(reference_vocab.values()))
+
+    # print("Ref Vocab - Vocab:")
+    # pprint.pp(set(reference_vocab.values()) - set(vocab.values()))
+
+    # print("Ref Vocab:")
+    # pprint.pp(reference_vocab)
+
     assert set(vocab.keys()) == set(reference_vocab.keys())
     assert set(vocab.values()) == set(reference_vocab.values())
 
