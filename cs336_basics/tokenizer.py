@@ -1,3 +1,7 @@
+import argparse
+import cProfile
+import pickle
+import pstats
 import regex as re
 import pprint
 from tqdm import tqdm
@@ -7,12 +11,22 @@ import os
 import pathlib
 from typing import BinaryIO
 from itertools import repeat
-from deepdiff import DeepDiff
+from collections.abc import Iterable, Iterator
+from pathlib import Path
+import time
+import uuid
+import os
+import diskcache
+# from deepdiff import DeepDiff
 
 # Regex for pretokenizing
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-
-
+tiny_stories_valid = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-valid.txt'
+tiny_stories_train = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train.txt'
+test_corpus = """/Users/alexandercohen/Documents/Research After 2025/Stanford CS336/CS336-Spring-2026/assignments/assignment1-basics/text/test_corpus.txt"""
+owt_train = """/Users/alexandercohen/Local Documents/data/owt_train.txt"""
+owt_valid = """/Users/alexandercohen/Local Documents/data/owt_valid.txt"""
+cache_dir = """/Users/alexandercohen/Local Documents/cache_dir"""
 
 def make_pair_freqs(freq_table: dict[tuple[bytes,...], int]) -> dict[tuple[bytes, bytes], int]:
     
@@ -31,121 +45,236 @@ def soft_add(the_dict, key, inc = 1):
     v = the_dict.get(key, 0)
     the_dict[key] = v+inc
 
+def apply_merge_to_tup(
+    byte_tup: tuple[bytes,...], 
+    merge: tuple[bytes, bytes]) -> tuple[bytes,...]:
+    
+    merged = []
+    j = 0
+    while j < len(byte_tup):
+        if j < len(byte_tup) - 1 and (byte_tup[j], byte_tup[j+1]) == merge:
+            merged.append(byte_tup[j] + byte_tup[j+1])
+            j += 2
+        else:
+            merged.append(byte_tup[j])
+            j += 1
+
+    return tuple(merged)
+
+
 def do_merge(
     freq_table: dict[tuple[bytes,...], int], 
+    tok_to_pretok: dict[bytes, set[tuple[bytes,...]]],
     pair_freqs: dict[tuple[bytes, bytes], int],
-    max_key: tuple[bytes, bytes]) -> dict[tuple[bytes,...], int]:
+    max_key: tuple[bytes, bytes], 
+    verbose = False) -> dict[tuple[bytes,...], int]:
 
 
     new_tok = max_key[0] + max_key[1]
     pair_freqs[max_key] = 0
-    
-    # go through pretokens and perform merges
-    # new_table: dict[tuple[bytes,...], int] = {}
 
-    for k, v in list(freq_table.items()): # k is a tuple[bytes,...]
-        merged_k = []
-        j = 0
-        while j < len(k):
-            if j < len(k) - 1 and (k[j], k[j+1]) == max_key:
-                merged_k.append(k[j] + k[j+1])
-                j += 2
-            else:
-                merged_k.append(k[j])
-                j += 1
+    relevant_pretoks = tok_to_pretok[max_key[0]] & tok_to_pretok[max_key[1]]
 
-        merged_k = tuple(merged_k)
+    if verbose:
+        print("freq_table:")
+        pprint.pp(freq_table)
+
+        print("tok_to_pretok:")
+        pprint.pp(tok_to_pretok)
+
+        print("pair_freqs:")
+        pprint.pp(pair_freqs)
+
+        print("max_key:")
+        pprint.pp(max_key)
+
+        print("relevant_pretoks:")
+        pprint.pp(relevant_pretoks)
+
+    for k in relevant_pretoks:
+        v = freq_table[k]
+        merged_k = apply_merge_to_tup(k, max_key)
+        # j = 0
+        # while j < len(k):
+        #     if j < len(k) - 1 and (k[j], k[j+1]) == max_key:
+        #         merged_k.append(k[j] + k[j+1])
+        #         j += 2
+        #     else:
+        #         merged_k.append(k[j])
+        #         j += 1
+        # merged_k = tuple(merged_k)
+
         if merged_k != k:  
-            # subtract old pair freqs 
-            for j in range(len(merged_k)-1):
-                b1 = merged_k[j]
-                b2 = merged_k[j+1]
-                soft_add(pair_freqs, (b1, b2), +v)
-             
-            # add new pair freqs
+            # remove old tok to pretok pointers
+            for t in k:
+                tok_to_pretok[t].discard(k)
+            
+            # add new tok to pretok pointers
+            for t in merged_k:
+                tok_to_pretok.setdefault(t, set()).add(merged_k)    
+            
+
+
+
+            # delete old pair freqs
             for j in range(len(k)-1):
                 b1 = k[j]
                 b2 = k[j+1]
                 soft_add(pair_freqs, (b1, b2), -v)
 
+            # add new pair freqs 
+            for j in range(len(merged_k)-1):
+                b1 = merged_k[j]
+                b2 = merged_k[j+1]
+                soft_add(pair_freqs, (b1, b2), +v)
+             
+            
+
             freq_table.pop(k, None)
             freq_table[merged_k] = v
-
-
-    # return new_table
+    
 
 
 def add_freq_table(doc: str, freq_table: dict[tuple[bytes,...], int] = None):
-    
-
-    # # create frequency dictionary 
-    # if freq_table == None:
-    #     freq_table = {}
-
     pretokenized = re.finditer(PAT, doc)
     for match in pretokenized:
         tok = match.group(0)
         key = tuple(bytes([c]) for c in tok.encode('utf-8'))
-        val = freq_table.get(key, 0)
-        freq_table[key] = val + 1
-
-    # return freq_table
+        soft_add(freq_table, key)
 
 def make_chunk_freq_table(
-    input_path: BinaryIO, 
+    input_path: str,  # Changed from BinaryIO since a string path is passed to open()
     delim: str,
-    start: int, 
-    end: int) -> dict[tuple[bytes,...], int]:
-    
-    freq_table = {}
+    start: int,
+    end: int,
+    position: int,  # <-- Added
+    use_disk=False,
+) -> dict[tuple[bytes, ...], int]:
+    if use_disk:
+        freq_table = diskcache.Index(f"{cache_dir}/cache_{uuid.uuid4()}")
+    else:
+        freq_table = {}
     with open(input_path, "rb") as f:
         f.seek(start)
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
         split_chunks = re.split(delim, chunk)
 
-        for sc in split_chunks:
+        # <-- Added position and leave=False to handle multiple stacked bars cleanly
+        for sc in tqdm.tqdm(
+            split_chunks,
+            position=position,
+            leave=False,
+            desc=f"Chunk {position}",
+        ):
             add_freq_table(sc, freq_table)
 
     return freq_table
 
-def make_freq_table_multiprocessed(input_path: str, delim: str, num_processes = 4):
+
+def make_freq_table_multiprocessed(
+    input_path: str, delim: str, num_processes=8, use_disk=False
+):
     with open(input_path, "rb") as f:
-        boundaries = cs336_basics.pretokenization_example.find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+        boundaries = cs336_basics.pretokenization_example.find_chunk_boundaries(
+            f, num_processes, b"<|endoftext|>"
+        )
 
-        num_pieces = len(boundaries)-1
+        num_pieces = len(boundaries) - 1
+        print("Num boundaries:", num_pieces)
 
-        with concurrent.futures.ProcessPoolExecutor(max_workers = num_processes) as executor:
-            freq_tables = executor.map(make_chunk_freq_table, 
-                                        repeat(input_path, num_pieces),
-                                        repeat(delim, num_pieces),
-                                        boundaries[:-1], # boundary starts
-                                        boundaries[1:]) # boundary ends
+        # <-- Added initializer and initargs so child processes share the main terminal lock
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=num_processes,
+            initializer=tqdm.tqdm.set_lock,
+            initargs=(tqdm.tqdm.get_lock(),),
+        ) as executor:
+            # <-- Switched from executor.map to executor.submit to pass the dynamic position index (idx)
+            futures = [
+                executor.submit(
+                    make_chunk_freq_table,
+                    input_path,
+                    delim,
+                    start,
+                    end,
+                    idx,
+                    use_disk,
+                )
+                for idx, (start, end) in enumerate(
+                    zip(boundaries[:-1], boundaries[1:])
+                )
+            ]
+            freq_tables = [f.result() for f in futures]
 
-            combined_table: dict[tuple[bytes,...], int] = {}
+            if use_disk:
+                combined_table = diskcache.Index(
+                    f"{cache_dir}/cache_{uuid.uuid4()}"
+                )
+            else:
+                combined_table = {}
+
             for table in freq_tables:
-                for (k, v) in table.items():
+                for k, v in table.items():
                     count = combined_table.get(k, 0)
                     combined_table[k] = count + v
 
-
     return combined_table
 
-def make_freq_table_basic(input_path: str):
-    with open(input_path, "rb") as f:
-        boundaries = pretokenization_example.find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+# def make_chunk_freq_table(
+#     input_path: BinaryIO, 
+#     delim: str,
+#     start: int, 
+#     end: int, 
+#     use_disk = False) -> dict[tuple[bytes,...], int]:
+    
+#     if use_disk:
+#         freq_table = diskcache.Index(f'{cache_dir}/cache_{uuid.uuid4()}')
+#     else:
+#         freq_table = {}
+#     with open(input_path, "rb") as f:
+#         f.seek(start)
+#         chunk = f.read(end - start).decode("utf-8", errors="ignore")
+#         split_chunks = re.split(delim, chunk)
 
-        inputs = [(input_path, start, end) for (start, end) in zip(boundaries[:-1], boundaries[1:])]
-        input_paths, starts, ends = zip(*inputs)
-        with concurrent.futures.ProcessPoolExecutor(max_workers = num_processes) as executor:
-            freq_tables = executor.map(make_chunk_freq_table, input_paths, starts, ends)
-            combined_table: dict[tuple[bytes,...], int] = {}
-            for table in freq_tables:
-                for (k, v) in table.items():
-                    count = combined_table.get(k, 0)
-                    combined_table[k] = count + v
+#         for sc in tqdm(split_chunks):
+#             add_freq_table(sc, freq_table)
+
+#     return freq_table
+
+# def make_freq_table_multiprocessed(input_path: str, delim: str, num_processes = 8, use_disk = False):
+#     with open(input_path, "rb") as f:
+#         boundaries = cs336_basics.pretokenization_example.find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+
+#         num_pieces = len(boundaries)-1
+
+#         print("Num boundaries:", num_pieces)
+
+#         with concurrent.futures.ProcessPoolExecutor(max_workers = num_processes) as executor:
+#             freq_tables = executor.map(make_chunk_freq_table, 
+#                                         repeat(input_path, num_pieces),
+#                                         repeat(delim, num_pieces),
+#                                         boundaries[:-1], # boundary starts
+#                                         boundaries[1:]) # boundary ends
+
+#             # combined_table: dict[tuple[bytes,...], int] = {}
+#             if use_disk:
+#                 combined_table = diskcache.Index(f'{cache_dir}/cache_{uuid.uuid4()}')
+#             else:
+#                 combined_table = {}
+
+#             for table in freq_tables:
+#                 for (k, v) in table.items():
+#                     count = combined_table.get(k, 0)
+#                     combined_table[k] = count + v
 
 
-    return combined_table
+#     return combined_table
+
+
+def get_max_key(pair_freqs):
+    sort_vals = [(val, key[0], key[1]) for key, val in pair_freqs.items()]
+    max_val = max(sort_vals)
+    max_key = (max_val[1], max_val[2])
+    return max_key
 
 """
 Uses byte pair encoding to learn a tokenizer from a corpus
@@ -160,59 +289,71 @@ def train_bpe(
     special_tokens: list[str], # A list of special strings to be added to vocab. 
                                # These are treated as hard boundaries during 
                                # training
+    num_cores: int = 8,
+    verbose = False,
+    use_disk = False
     ) -> tuple[
         dict[int, bytes], # vocab: the tokenizer vocabulary,
                           #  mapping from int to bytes
         list[tuple[bytes, bytes]]]: # merges: a list of BPE merges from training
     
-    delim = "|".join([re.escape(t) for t in special_tokens])
-    freq_table = make_freq_table_multiprocessed(input_path, delim, 4)
 
+    delim = "|".join([re.escape(t) for t in special_tokens])
+    
+    if verbose:
+        print(f"Training BPE:\n"
+              f"Input path = {input_path}\n"
+              f"Vocab size = {vocab_size}\n"
+              f"Special tokens = {special_tokens}\n"
+              f"Num cores = {num_cores}\n"
+              f"Use disk = {use_disk}")
+
+    if verbose:
+        print(f"Starting pretokenization")
+
+    start_time = time.perf_counter()
+    freq_table = make_freq_table_multiprocessed(input_path, delim, num_cores, use_disk = use_disk)
+    execution_time = time.perf_counter() - start_time
+
+    if verbose:
+        print(f"Finished pretokenization in {execution_time:.6f} seconds\n")
+
+
+    print(f"Setting up for merges")
+    start_time = time.perf_counter()
     # create merge list
     merges: list[tuple[bytes, bytes]] = []
     new_tokens = []
 
     pair_freqs = make_pair_freqs(freq_table)
+    
+    tok_to_pretok = {}
+    for pretok in freq_table:
+        for t in pretok:
+            tok_to_pretok.setdefault(t, set()).add(pretok)
 
-    for i in tqdm(range(vocab_size - 256 - len(special_tokens))):
-        # pair_freqs = make_pair_freqs(freq_table)
+    num_merges = vocab_size - 256 - len(special_tokens)
 
-        # print("pair_freqs:")
-        # pprint.pp(pair_freqs)
+    execution_time = time.perf_counter() - start_time
+    if verbose:
+        print(f"Finished setting up merges in {execution_time:.6f} seconds.")
 
-        # a list of tuple(int, int, int)
-        sort_vals = [(val, key[0], key[1]) for key, val in pair_freqs.items()]
+    print("Starting merges")
+    start_time = time.perf_counter()
 
-        max_val = max(sort_vals)
-        max_key = (max_val[1], max_val[2])
-        # print('merge:', max_key)
+    merge_iterable = tqdm(range(num_merges)) if verbose else range(num_merges)
+    for i in merge_iterable:
+        max_key = get_max_key(pair_freqs)
+
         merges.append(max_key)
         new_tokens.append(max_key[0] + max_key[1])
 
-        do_merge(freq_table, pair_freqs, max_key)
+        do_merge(freq_table, tok_to_pretok, pair_freqs, max_key, verbose=False)
 
-
-        # hand_made_pair_freqs = make_pair_freqs(freq_table)
-        # filtered_dict = {k: v for k, v in pair_freqs.items() if v != 0}
-        # print("Freq table:")
-        # pprint.pp(freq_table)
-
-        # if filtered_dict != hand_made_pair_freqs:
-        #     print("Max key:", max_key)
-
-        #     # Find the difference
-        #     diff = DeepDiff(pair_freqs, hand_made_pair_freqs)
-
-        # #     # print("Pair freqs:")
-        # #     # pprint.pp(pair_freqs)
-
-        # #     # print("handmade pair freqs:")
-        # #     # pprint.pp(hand_made_pair_freqs)
-
-        #     # Pretty print the result
-        #     print(diff.pretty())
-
-            # raise AssertionError("pair freqs wrong")
+    execution_time = time.perf_counter() - start_time
+    if verbose:
+        print(f"Finished merges in {execution_time:.6f} seconds.")
+    
 
 
     vocab: dict[int, bytes] = {}
@@ -235,31 +376,175 @@ def train_bpe(
 
     return vocab, merges
 
+
+class Tokenizer:
+    # construct a tokenizer from a given vocabulary, 
+    # list of merges, and list of special tokens
+    def __init__(self, 
+        vocab: dict[int, bytes], 
+        merges: list[tuple[bytes, bytes]], 
+        special_tokens: list[str] | None = None):
+        
+
+        self.vocab = vocab
+        self.tok_to_ind = {tok:ind for ind, tok in self.vocab.items()}
+        self.merges = merges
+        self.special_tokens = None
+        # sort from longest to shortest. 
+        # eg if a and ab are both special tokens, want to check for ab first
+    
+
+        self.delim = None
+        if special_tokens != None:
+            self.special_tokens = sorted(special_tokens, key=len, reverse=True)
+            self.delim = "|".join([re.escape(t) for t in self.special_tokens])
+            # Add new special tokens to the vocabulary
+            ind = len(self.vocab)
+            for t in special_tokens:
+                t_enc = t.encode('utf-8')
+                if t_enc not in self.tok_to_ind:
+                    self.vocab[ind] = t_enc
+                    self.tok_to_ind[t_enc] = ind
+                    ind += 1
+
+
+    @classmethod 
+    def from_files(cls, 
+        vocab_filepath: str, 
+        merges_filepath: str,
+        special_tokens: list[str] | None = None):
+        
+        with open(vocab_filepath, 'rb') as file:
+            vocab = pickle.load(file)
+
+        with open(merges_filepath, 'rb') as file:
+            merges = pickle.load(file)
+
+        return cls(vocab, merges, special_tokens)
+
+
+    def encode(self, text: str) -> list[int]:
+        return list(self.encode_iterable([text]))
+
+    def encode_pretok(self, pretok: str) -> Iterator[int]:
+        # encode to bytes
+        enc_tup = tuple(bytes([c]) for c in pretok.encode('utf-8'))
+
+        # iteratively apply merges
+        for m in self.merges:
+            enc_tup = apply_merge_to_tup(enc_tup, m)
+
+        for t in enc_tup:
+            yield self.tok_to_ind[t]
+
+    def encode_iterable_no_special(self, text: str) -> Iterator[int]:
+        pretokenized = re.finditer(PAT, text)
+        for pt in pretokenized:
+            yield from self.encode_pretok(pt.group())
+
+    # given an iterable of strings, return a generator 
+    # that lazily yields token IDs, for better memory efficiency
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        if self.special_tokens == None:
+            for s in iterable:
+                yield from self.encode_iterable_no_special(s)
+
+        else:
+            for s in iterable:
+                special_toks = re.finditer(self.delim, s)
+                last_end = 0
+                encoded_text = []
+                for match in special_toks:
+                    start, end = match.span()
+                    if start > last_end:
+                        chunk = s[last_end:start]
+                        yield from self.encode_iterable_no_special(chunk)
+
+                    # yield special token
+                    special_tok = match.group().encode('utf-8')
+                    yield self.tok_to_ind[special_tok]
+
+                    last_end = end
+
+                if last_end < len(s):
+                    chunk = s[last_end:]
+                    yield from self.encode_iterable_no_special(chunk)
+
+
+    # Decode a sequence of token IDsinto text
+    def decode(self, ids: list[int]) -> str:
+        decoded_bytes = b''.join([self.vocab[j] for j in ids])
+        return decoded_bytes.decode('utf-8', errors='replace')
+
+
+
 def main():
-    tiny_stories_valid = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-valid.txt'
-    tiny_stories_train = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train.txt'
-    test_corpus = """/Users/alexandercohen/Documents/Research After 2025/Stanford CS336/CS336-Spring-2026/assignments/assignment1-basics/text/test_corpus.txt"""
-    special_tokens = ["|<endoffile>|"]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, help="Mode: train, encode, decode, or none", default="none")
+    parser.add_argument("--corpus", type=str, help="filepath OR ts_valid OR ts_train OR owt_valid OR owt_train OR test_corpus", default="none")
+    parser.add_argument("--vocab_size", type=int, help="Size of vocab for training", default="257")
+    parser.add_argument("--cores", type=int, help="Number of cores for pretokenization", default="8")
+    parser.add_argument("--verbose", action="store_true", help="Increase output verbosity")
+    parser.add_argument("--use_disk", action="store_true", help="Store frequency table to disk (so big corpus doesn't crash memory)")
 
-    delim = "|".join([re.escape(t) for t in special_tokens])
+    args = parser.parse_args()
 
-    # freq_table = make_freq_table_multiprocessed(tiny_stories_valid, delim, 16)
-    # freq_table_words = sorted([(b''.join(k), v) for k, v in freq_table.items()], key = lambda item: -item[1])
+    print(f"Mode: {args.mode}, Corpus: {args.corpus}, Vocab Size: {args.vocab_size}")
 
-    # pprint.pp(freq_table_words)
-    # print(len(freq_table_words))
+    if args.mode == "train":
+        special_tokens = ["<|endoftext|>"]
+        delim = "|".join([re.escape(t) for t in special_tokens])
 
-    # # print("Freq table:")
-    # # pprint.pp(freq_table)
-    # return
+        corpus_filepath = None
+        output_prepend = None
+        if args.corpus == "ts_valid": 
+            corpus_filepath = tiny_stories_valid
+            output_prepend = f"ts_valid_{args.vocab_size}"
+        elif args.corpus == "ts_train": 
+            corpus_filepath = tiny_stories_train
+            output_prepend = f"ts_train_{args.vocab_size}"
+        elif args.corpus == "owt_valid": 
+            corpus_filepath = owt_valid
+            output_prepend = f"owt_valid_{args.vocab_size}"
+        elif args.corpus == "owt_train": 
+            corpus_filepath = owt_train
+            output_prepend = f"owt_train_{args.vocab_size}"
+        else:
+            path = Path(args.corpus)
+            assert(path.exists())
+            assert(path.is_file())
+            corpus_filepath = args.corpus
+            output_prepend = f"{path.name}_{args.vocab_size}"
 
-    vocab, merges = train_bpe(test_corpus, 500, special_tokens)
+        print(f"corpus_filepath: {corpus_filepath}, output_prepend: {output_prepend}")
+        vocab, merges = train_bpe(corpus_filepath, 10000, special_tokens, verbose = args.verbose, use_disk = args.use_disk)
+        print("Vocab:")
+        pprint.pp(vocab)
 
-    print("Vocab:")
-    pprint.pp(vocab)
+        print("\nMerges:")
+        pprint.pp(merges)
 
-    print("\nMerges:")
-    pprint.pp(merges)
+        with open(f"{output_prepend}_vocab.pkl", "wb") as file:
+            pickle.dump(vocab, file)
+
+        with open(f"{output_prepend}_merges.pkl", "wb") as file:
+            pickle.dump(merges, file)
+    elif args.mode == "decode":
+        pass
+    elif args.mode == "encode":
+        my_tok = Tokenizer.from_files("ts_train_10000_vocab.pkl", "ts_train_10000_merges.pkl", ["<|endoftext|>"])
+        enc = my_tok.encode("hello to the world! my name is alex.<|endoftext|>on the 4th of july there was a big storm<|endoftext|>my name is now kendra!")
+        print(f"Enc: {enc}")
+        dec = my_tok.decode(enc)
+        print(f"Dec: {dec}")
+    elif args.mode == "none":
+        pass
+    else:
+        raise ValueError("Mode not recognized: {args.mode}")
+
+
+    
+    
 
 if __name__ == '__main__':
     main()
