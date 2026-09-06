@@ -1,0 +1,18 @@
+Mode: test_compr, Corpus: none, Vocab Size: 257
+Bytes/tok for model ts_valid on tiny stories: 4.0505
+Bytes/tok for model ts_train on tiny stories: 4.0412
+Bytes/tok for model owt_valid on tiny stories: 3.6391
+Bytes/tok for model owt_train on tiny stories: 3.6375
+Bytes/tok for model ts_valid on open web text: 3.2608
+Bytes/tok for model ts_train on open web text: 3.2900
+Bytes/tok for model owt_valid on open web text: 3.9771
+Bytes/tok for model owt_train on open web text: 3.9689
+Trivial bytes/tok (if we used 256 tokens, just bytes): 1.6610
+Bytes/s for model ts_valid on tiny stories: 798120.0756
+Bytes/s for model ts_train on tiny stories: 814768.8098
+Bytes/s for model owt_valid on tiny stories: 779689.0024
+Bytes/s for model owt_train on tiny stories: 825371.3497
+Bytes/s for model ts_valid on open web text: 780311.0766
+Bytes/s for model ts_train on open web text: 780382.5238
+Bytes/s for model owt_valid on open web text: 744812.6301
+Bytes/s for model owt_train on open web text: 750584.8708

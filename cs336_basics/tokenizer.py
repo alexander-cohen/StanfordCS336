@@ -17,16 +17,25 @@ import time
 import uuid
 import os
 import diskcache
+import multiprocessing
+import random
+import math
+import numpy as np
 # from deepdiff import DeepDiff
 
 # Regex for pretokenizing
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 tiny_stories_valid = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-valid.txt'
+tiny_stories_valid_tokd = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-valid_tokd.pkl'
 tiny_stories_train = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train.txt'
+tiny_stories_train_tokd = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train_tokd.pkl'
 test_corpus = """/Users/alexandercohen/Documents/Research After 2025/Stanford CS336/CS336-Spring-2026/assignments/assignment1-basics/text/test_corpus.txt"""
 owt_train = """/Users/alexandercohen/Local Documents/data/owt_train.txt"""
+owt_train_tokd = """/Users/alexandercohen/Local Documents/data/owt_train_tokd.pkl"""
 owt_valid = """/Users/alexandercohen/Local Documents/data/owt_valid.txt"""
+owt_valid_tokd = """/Users/alexandercohen/Local Documents/data/owt_valid_tokd.pkl"""
 cache_dir = """/Users/alexandercohen/Local Documents/cache_dir"""
+EOT = "<|endoftext|>"
 
 def make_pair_freqs(freq_table: dict[tuple[bytes,...], int]) -> dict[tuple[bytes, bytes], int]:
     
@@ -143,15 +152,15 @@ def add_freq_table(doc: str, freq_table: dict[tuple[bytes,...], int] = None):
         soft_add(freq_table, key)
 
 def make_chunk_freq_table(
-    input_path: str,  # Changed from BinaryIO since a string path is passed to open()
+    input_path: str, 
     delim: str,
-    start: int,
-    end: int,
-    position: int,  # <-- Added
-    use_disk=False,
-) -> dict[tuple[bytes, ...], int]:
+    start: int, 
+    end: int, 
+    position: int,
+    use_disk = False) -> dict[tuple[bytes,...], int]:
+    
     if use_disk:
-        freq_table = diskcache.Index(f"{cache_dir}/cache_{uuid.uuid4()}")
+        freq_table = diskcache.Index(f'{cache_dir}/cache_{uuid.uuid4()}')
     else:
         freq_table = {}
     with open(input_path, "rb") as f:
@@ -159,63 +168,47 @@ def make_chunk_freq_table(
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
         split_chunks = re.split(delim, chunk)
 
-        # <-- Added position and leave=False to handle multiple stacked bars cleanly
-        for sc in tqdm.tqdm(
-            split_chunks,
-            position=position,
-            leave=False,
-            desc=f"Chunk {position}",
-        ):
+        for sc in tqdm(split_chunks, position=position, leave=False, desc=f"Chunk {position}"):
             add_freq_table(sc, freq_table)
 
     return freq_table
 
-
-def make_freq_table_multiprocessed(
-    input_path: str, delim: str, num_processes=8, use_disk=False
-):
+def make_freq_table_multiprocessed(input_path: str, delim: str, num_processes = 8, num_pieces = 8, use_disk = False):
     with open(input_path, "rb") as f:
-        boundaries = cs336_basics.pretokenization_example.find_chunk_boundaries(
-            f, num_processes, b"<|endoftext|>"
-        )
+        boundaries = cs336_basics.pretokenization_example.find_chunk_boundaries(f, num_pieces, EOT.encode('utf-8'))
 
-        num_pieces = len(boundaries) - 1
+        num_pieces = len(boundaries)-1
         print("Num boundaries:", num_pieces)
 
-        # <-- Added initializer and initargs so child processes share the main terminal lock
+        # <-- Create a picklable multiprocessing manager lock
+        ctx = multiprocessing.get_context("spawn")
+        manager = ctx.Manager()
+        mp_lock = manager.RLock()
+
         with concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_processes,
-            initializer=tqdm.tqdm.set_lock,
-            initargs=(tqdm.tqdm.get_lock(),),
+            max_workers = num_processes,
+            initializer = tqdm.set_lock,
+            initargs = (mp_lock,)  # <-- Pass the picklable manager lock instead of tqdm.get_lock()
         ) as executor:
-            # <-- Switched from executor.map to executor.submit to pass the dynamic position index (idx)
+            
             futures = [
-                executor.submit(
-                    make_chunk_freq_table,
-                    input_path,
-                    delim,
-                    start,
-                    end,
-                    idx,
-                    use_disk,
-                )
-                for idx, (start, end) in enumerate(
-                    zip(boundaries[:-1], boundaries[1:])
-                )
+                executor.submit(make_chunk_freq_table, input_path, delim, start, end, idx, use_disk)
+                for idx, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:]))
             ]
             freq_tables = [f.result() for f in futures]
 
             if use_disk:
-                combined_table = diskcache.Index(
-                    f"{cache_dir}/cache_{uuid.uuid4()}"
-                )
+                combined_table = diskcache.Index(f'{cache_dir}/cache_{uuid.uuid4()}')
             else:
                 combined_table = {}
 
             for table in freq_tables:
-                for k, v in table.items():
+                for (k, v) in table.items():
                     count = combined_table.get(k, 0)
                     combined_table[k] = count + v
+
+        # Clean up the manager context once the pool shuts down
+        manager.shutdown()
 
     return combined_table
 
@@ -290,6 +283,7 @@ def train_bpe(
                                # These are treated as hard boundaries during 
                                # training
     num_cores: int = 8,
+    num_pieces = 8,
     verbose = False,
     use_disk = False
     ) -> tuple[
@@ -312,7 +306,8 @@ def train_bpe(
         print(f"Starting pretokenization")
 
     start_time = time.perf_counter()
-    freq_table = make_freq_table_multiprocessed(input_path, delim, num_cores, use_disk = use_disk)
+    freq_table = make_freq_table_multiprocessed(input_path, delim, num_cores, 
+        num_pieces = num_pieces, use_disk = use_disk)
     execution_time = time.perf_counter() - start_time
 
     if verbose:
@@ -389,6 +384,7 @@ class Tokenizer:
         self.vocab = vocab
         self.tok_to_ind = {tok:ind for ind, tok in self.vocab.items()}
         self.merges = merges
+        self.merge_ind = {m:j for (j, m) in enumerate(self.merges)}
         self.special_tokens = None
         # sort from longest to shortest. 
         # eg if a and ab are both special tokens, want to check for ab first
@@ -426,13 +422,38 @@ class Tokenizer:
     def encode(self, text: str) -> list[int]:
         return list(self.encode_iterable([text]))
 
+    def do_one_merge_fast(self, tok_list):
+        best_ind = len(self.merges)
+        tup_ind = -1
+        for j, (t1, t2) in enumerate(zip(tok_list[:-1], tok_list[1:])):
+            mi = self.merge_ind.get((t1, t2), len(self.merges))
+            if mi < best_ind:
+                best_ind = mi
+                tup_ind = j
+
+        if best_ind < len(self.merges):
+            return tup_ind
+        else:
+            return None
+
+    def merge_tup(self, tok_list):
+        # keep on doing merges until none happen
+        while True:
+            tok_ind = self.do_one_merge_fast(tok_list)
+            if tok_ind == None:
+                return tok_list
+            else:
+                tok_list[tok_ind:tok_ind+2] = [tok_list[tok_ind] + tok_list[tok_ind+1]]
+
+
     def encode_pretok(self, pretok: str) -> Iterator[int]:
         # encode to bytes
         enc_tup = tuple(bytes([c]) for c in pretok.encode('utf-8'))
 
         # iteratively apply merges
-        for m in self.merges:
-            enc_tup = apply_merge_to_tup(enc_tup, m)
+        # for m in self.merges:
+        #     enc_tup = apply_merge_to_tup(enc_tup, m)
+        enc_tup = tuple(self.merge_tup(list(enc_tup)))
 
         for t in enc_tup:
             yield self.tok_to_ind[t]
@@ -480,19 +501,20 @@ class Tokenizer:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, help="Mode: train, encode, decode, or none", default="none")
+    parser.add_argument("--mode", type=str, help="Mode: train, encode, decode, test_compr, or encode_and_serialize, or none", default="none")
     parser.add_argument("--corpus", type=str, help="filepath OR ts_valid OR ts_train OR owt_valid OR owt_train OR test_corpus", default="none")
     parser.add_argument("--vocab_size", type=int, help="Size of vocab for training", default="257")
     parser.add_argument("--cores", type=int, help="Number of cores for pretokenization", default="8")
     parser.add_argument("--verbose", action="store_true", help="Increase output verbosity")
     parser.add_argument("--use_disk", action="store_true", help="Store frequency table to disk (so big corpus doesn't crash memory)")
+    parser.add_argument("--num_pieces", type=int, help="Number of pieces to chunk the text into", default=8)
 
     args = parser.parse_args()
 
     print(f"Mode: {args.mode}, Corpus: {args.corpus}, Vocab Size: {args.vocab_size}")
 
     if args.mode == "train":
-        special_tokens = ["<|endoftext|>"]
+        special_tokens = [EOT]
         delim = "|".join([re.escape(t) for t in special_tokens])
 
         corpus_filepath = None
@@ -517,7 +539,7 @@ def main():
             output_prepend = f"{path.name}_{args.vocab_size}"
 
         print(f"corpus_filepath: {corpus_filepath}, output_prepend: {output_prepend}")
-        vocab, merges = train_bpe(corpus_filepath, 10000, special_tokens, verbose = args.verbose, use_disk = args.use_disk)
+        vocab, merges = train_bpe(corpus_filepath, 10000, special_tokens, verbose = args.verbose, use_disk = args.use_disk, num_pieces = args.num_pieces)
         print("Vocab:")
         pprint.pp(vocab)
 
@@ -532,21 +554,147 @@ def main():
     elif args.mode == "decode":
         pass
     elif args.mode == "encode":
-        my_tok = Tokenizer.from_files("ts_train_10000_vocab.pkl", "ts_train_10000_merges.pkl", ["<|endoftext|>"])
+        my_tok = Tokenizer.from_files("ts_train_10000_vocab.pkl", "ts_train_10000_merges.pkl", [EOT])
         enc = my_tok.encode("hello to the world! my name is alex.<|endoftext|>on the 4th of july there was a big storm<|endoftext|>my name is now kendra!")
         print(f"Enc: {enc}")
         dec = my_tok.decode(enc)
         print(f"Dec: {dec}")
+    elif args.mode == 'test_compr':
+        test_compression_ratios()
+    elif args.mode == 'encode_and_serialize':
+        tiny_stories_tok = Tokenizer.from_files("ts_train_10000_vocab.pkl", "ts_train_10000_merges.pkl", [EOT])
+        owt_tok = Tokenizer.from_files("owt_valid_10000_vocab.pkl", "owt_valid_10000_merges.pkl", [EOT])
+        print("Encoding tiny stories validation set w/ tiny stories tokenizer")
+        encode_and_serialize(tiny_stories_valid, tiny_stories_tok, tiny_stories_valid_tokd)
+        print("Encoding tiny stories training set w/ tiny stories tokenizer")
+        encode_and_serialize(tiny_stories_train, tiny_stories_tok, tiny_stories_train_tokd)
+        print("Encoding open web text validation set w/ open web text tokenizer")
+        encode_and_serialize(owt_valid, owt_tok, owt_valid_tokd)
+        print("Encoding open web text training set w/ open web text tokenizer")
+        encode_and_serialize(owt_train, owt_tok, owt_train_tokd)
     elif args.mode == "none":
         pass
     else:
         raise ValueError("Mode not recognized: {args.mode}")
 
+def test_compression_ratios(num_docs = 50):
+    compare = ['ts_valid', 'ts_train', 'owt_valid', 'owt_train']
+
+    with open(tiny_stories_valid, 'rb') as ts_valid:
+        all_stories = ts_valid.read().decode("utf-8", errors="ignore")
+        split_stories = re.split(re.escape(EOT), all_stories)
+        sampled_ts = random.sample(split_stories, num_docs)
+
+    with open(owt_valid, 'rb') as owt_valid_f:
+        all_stories = owt_valid_f.read().decode("utf-8", errors="ignore")
+        split_stories = re.split(re.escape(EOT), all_stories)
+        sampled_owt = random.sample(split_stories, num_docs)
+
+    # print("Tiny stories:")
+    # pprint.pp(sampled_ts)
+    # print("\n\nOWT:")
+    # pprint.pp(sampled_owt)
+
+    tokenizers = {}
+    for c in compare:
+        tokenizers[c] = Tokenizer.from_files(f"{c}_10000_vocab.pkl",
+                                            f"{c}_10000_merges.pkl",
+                                            [EOT])
+    
+    total_toks_on_ts = {}
+    total_toks_on_owt = {}
+    total_time_on_ts = {}
+    total_time_on_owt = {}
+    total_bytes_ts = 0
+    total_bytes_owt = 0
+
+    for doc in sampled_ts:
+        total_bytes_ts += len(doc.encode("utf-8"))
+
+        for c in compare:
+            start = time.perf_counter()
+            tokenized = tokenizers[c].encode(doc)
+            soft_add(total_time_on_ts, c, time.perf_counter() - start)
+            soft_add(total_toks_on_ts, c, len(tokenized))
+
+    for doc in sampled_owt:
+        total_bytes_owt += len(doc.encode("utf-8"))
+
+        for c in compare:
+            start = time.perf_counter()
+            tokenized = tokenizers[c].encode(doc)
+            soft_add(total_time_on_owt, c, time.perf_counter() - start)
+            soft_add(total_toks_on_owt, c, len(tokenized))
+
+    for c in compare:
+        print(f"Bytes/tok for model {c} on tiny stories: {total_bytes_ts/total_toks_on_ts[c]:.4f}")
+
+    for c in compare:
+        print(f"Bytes/tok for model {c} on open web text: {total_bytes_owt/total_toks_on_owt[c]:.4f}")
+
+    print(f"Trivial bytes/tok (if we used 256 tokens, just bytes): {math.log(10000)/math.log(256):.4f}")
+
+    for c in compare:
+        print(f"Bytes/s for model {c} on tiny stories: {total_bytes_ts/total_time_on_ts[c]:.4f}")
+
+    for c in compare:
+        print(f"Bytes/s for model {c} on open web text: {total_bytes_owt/total_time_on_owt[c]:.4f}")
 
     
+def encode_chunk(
+    input_path: str | os.PathLike, 
+    start: int, end: int, tokenizer: Tokenizer, 
+    position = 0) -> list[int]:
     
+    with open(input_path, 'rb') as doc:
+        doc.seek(start)
+        chunk = doc.read(end - start).decode('utf-8')
+        subdocs_iterable = re.split('('+ re.escape(EOT) + ')', chunk)
+        # print(subdocs_iterable)
+
+    all_toks = []
+    for doc in tqdm(subdocs_iterable, position=position, leave=False, desc=f"Chunk {position}"):
+        all_toks += tokenizer.encode(doc)
+
+    return all_toks
+
+
+def encode_and_serialize(input_path, tokenizer, output_path, num_processes = 8, num_pieces = 128):
+    with open(input_path, "rb") as f:
+        boundaries = cs336_basics.pretokenization_example.find_chunk_boundaries(f, num_pieces, EOT.encode('utf-8'))
+
+    num_pieces = len(boundaries)-1
+    print("Num boundaries:", num_pieces)
+
+    # <-- Create a picklable multiprocessing manager lock
+    ctx = multiprocessing.get_context("spawn")
+    manager = ctx.Manager()
+    mp_lock = manager.RLock()
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers = num_processes,
+        initializer = tqdm.set_lock,
+        initargs = (mp_lock,)  # <-- Pass the picklable manager lock instead of tqdm.get_lock()
+    ) as executor:
+        
+        futures = [
+            executor.submit(encode_chunk, input_path, start, end, tokenizer, idx)
+            for idx, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:]))
+        ]
+        # all_toks = [t for f.result() for f in futures]
+        all_tok_inds = [ti for f in futures for ti in f.result()]
+        all_tok_inds = np.array(all_tok_inds, dtype=np.uint16)
+        
+    # Clean up the manager context once the pool shuts down
+    manager.shutdown()
+
+    with open(output_path, "wb") as file:
+        pickle.dump(all_tok_inds, file)
 
 if __name__ == '__main__':
     main()
+    tiny_stories_tok = Tokenizer.from_files("ts_train_10000_vocab.pkl", "ts_train_10000_merges.pkl", [EOT])
+    owt_tok = Tokenizer.from_files("owt_valid_10000_vocab.pkl", "owt_valid_10000_merges.pkl", [EOT])
+
 
 
