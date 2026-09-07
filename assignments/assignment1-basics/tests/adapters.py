@@ -42,6 +42,7 @@ def run_embedding(
     weights: Float[Tensor, " vocab_size d_model"],
     token_ids: Int[Tensor, " ..."],
 ) -> Float[Tensor, " ... d_model"]:
+
     """
     Given the weights of an Embedding layer, get the embeddings for a batch of token ids.
 
