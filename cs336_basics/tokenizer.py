@@ -16,7 +16,7 @@ from pathlib import Path
 import time
 import uuid
 import os
-import diskcache
+# import diskcache
 import multiprocessing
 import random
 import math
@@ -26,14 +26,16 @@ import numpy as np
 # Regex for pretokenizing
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 tiny_stories_valid = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-valid.txt'
-tiny_stories_valid_tokd = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-valid_tokd.pkl'
+tiny_stories_valid_tokd = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-valid_tokd.npy'
 tiny_stories_train = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train.txt'
-tiny_stories_train_tokd = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train_tokd.pkl'
+tiny_stories_train_tokd = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train_tokd.npy'
 test_corpus = """/Users/alexandercohen/Documents/Research After 2025/Stanford CS336/CS336-Spring-2026/assignments/assignment1-basics/text/test_corpus.txt"""
 owt_train = """/Users/alexandercohen/Local Documents/data/owt_train.txt"""
-owt_train_tokd = """/Users/alexandercohen/Local Documents/data/owt_train_tokd.pkl"""
+owt_train_tokd = """/Users/alexandercohen/Local Documents/data/owt_train_tokd.npy"""
+owt_train_tokd_prepend = """/Users/alexandercohen/Local Documents/data/owt_train_tokd"""
 owt_valid = """/Users/alexandercohen/Local Documents/data/owt_valid.txt"""
-owt_valid_tokd = """/Users/alexandercohen/Local Documents/data/owt_valid_tokd.pkl"""
+
+owt_valid_tokd = """/Users/alexandercohen/Local Documents/data/owt_valid_tokd.npy"""
 cache_dir = """/Users/alexandercohen/Local Documents/cache_dir"""
 EOT = "<|endoftext|>"
 
@@ -422,6 +424,7 @@ class Tokenizer:
     def encode(self, text: str) -> list[int]:
         return list(self.encode_iterable([text]))
 
+
     def do_one_merge_fast(self, tok_list):
         best_ind = len(self.merges)
         tup_ind = -1
@@ -436,6 +439,8 @@ class Tokenizer:
         else:
             return None
 
+    # could be made faster by keeping track of candidate merges and 
+    # updating after each
     def merge_tup(self, tok_list):
         # keep on doing merges until none happen
         while True:
@@ -564,14 +569,14 @@ def main():
     elif args.mode == 'encode_and_serialize':
         tiny_stories_tok = Tokenizer.from_files("ts_train_10000_vocab.pkl", "ts_train_10000_merges.pkl", [EOT])
         owt_tok = Tokenizer.from_files("owt_valid_10000_vocab.pkl", "owt_valid_10000_merges.pkl", [EOT])
-        print("Encoding tiny stories validation set w/ tiny stories tokenizer")
-        encode_and_serialize(tiny_stories_valid, tiny_stories_tok, tiny_stories_valid_tokd)
-        print("Encoding tiny stories training set w/ tiny stories tokenizer")
-        encode_and_serialize(tiny_stories_train, tiny_stories_tok, tiny_stories_train_tokd)
-        print("Encoding open web text validation set w/ open web text tokenizer")
-        encode_and_serialize(owt_valid, owt_tok, owt_valid_tokd)
+        # print("Encoding tiny stories validation set w/ tiny stories tokenizer")
+        # encode_and_serialize(tiny_stories_valid, tiny_stories_tok, tiny_stories_valid_tokd)
+        # print("Encoding tiny stories training set w/ tiny stories tokenizer")
+        # encode_and_serialize(tiny_stories_train, tiny_stories_tok, tiny_stories_train_tokd)
+        # print("Encoding open web text validation set w/ open web text tokenizer")
+        # encode_and_serialize(owt_valid, owt_tok, owt_valid_tokd)
         print("Encoding open web text training set w/ open web text tokenizer")
-        encode_and_serialize(owt_train, owt_tok, owt_train_tokd)
+        encode_and_serialize(owt_train, owt_tok, owt_train_tokd_prepend, num_dumps = 8)
     elif args.mode == "none":
         pass
     else:
@@ -659,37 +664,57 @@ def encode_chunk(
     return all_toks
 
 
-def encode_and_serialize(input_path, tokenizer, output_path, num_processes = 8, num_pieces = 128):
+## This function is a bit of a mess. I used it to tokenize and serialize the training and validation corpi. 
+## I had to split owt_train into 8 pieces. I should have used np.memmap to deal with it in one file, without crashing memory.
+def encode_and_serialize(input_path, tokenizer, output_path_prepend, num_processes = 8, num_pieces = 128, num_dumps = 1):
     with open(input_path, "rb") as f:
         boundaries = cs336_basics.pretokenization_example.find_chunk_boundaries(f, num_pieces, EOT.encode('utf-8'))
 
     num_pieces = len(boundaries)-1
     print("Num boundaries:", num_pieces)
 
-    # <-- Create a picklable multiprocessing manager lock
-    ctx = multiprocessing.get_context("spawn")
-    manager = ctx.Manager()
-    mp_lock = manager.RLock()
 
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers = num_processes,
-        initializer = tqdm.set_lock,
-        initargs = (mp_lock,)  # <-- Pass the picklable manager lock instead of tqdm.get_lock()
-    ) as executor:
-        
-        futures = [
-            executor.submit(encode_chunk, input_path, start, end, tokenizer, idx)
-            for idx, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:]))
-        ]
-        # all_toks = [t for f.result() for f in futures]
-        all_tok_inds = [ti for f in futures for ti in f.result()]
-        all_tok_inds = np.array(all_tok_inds, dtype=np.uint16)
-        
-    # Clean up the manager context once the pool shuts down
-    manager.shutdown()
+    chunks_per_dump = num_pieces // num_dumps
+    for dump_ind in range(num_dumps):
+        bd_ind_start = dump_ind * chunks_per_dump
+        bd_ind_end = min((dump_ind+1) * chunks_per_dump, num_pieces)
+        chunks = zip(boundaries[bd_ind_start:bd_ind_end], boundaries[bd_ind_start+1:bd_ind_end+1])
+        # pprint.pp(list(chunks))
+        print(f"Starting chunk {dump_ind}")
 
-    with open(output_path, "wb") as file:
-        pickle.dump(all_tok_inds, file)
+        # <-- Create a picklable multiprocessing manager lock
+        ctx = multiprocessing.get_context("spawn")
+        manager = ctx.Manager()
+        mp_lock = manager.RLock()
+
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers = num_processes,
+            initializer = tqdm.set_lock,
+            initargs = (mp_lock,)  # <-- Pass the picklable manager lock instead of tqdm.get_lock()
+        ) as executor:
+            
+
+                futures = [
+                    executor.submit(encode_chunk, input_path, start, end, tokenizer, idx)
+                    for idx, (start, end) in enumerate(chunks)
+                ]
+                # all_toks = [t for f.result() for f in futures]
+                all_tok_inds = [ti for f in futures for ti in f.result()]
+                all_tok_inds = np.array(all_tok_inds, dtype=np.uint16)
+
+                np.save(f"{output_path_prepend}_{dump_ind}.npy", all_tok_inds)
+                print(f"Dumped chunk {dump_ind}")
+            
+        # Clean up the manager context once the pool shuts down
+        manager.shutdown()
+
+def convert_to_npy(filepath, outpath):
+    with open(filepath, 'rb') as file:
+        data = pickle.load(file)
+
+    pprint.pp(data)
+    np.save(outpath, data)
+    
 
 if __name__ == '__main__':
     main()
