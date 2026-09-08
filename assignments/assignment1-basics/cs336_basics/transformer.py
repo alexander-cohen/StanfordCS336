@@ -1,7 +1,7 @@
 import math
 from typing import Dict
 import torch
-from jaxtyping import Float, Int
+from jaxtyping import Float, Int, Bool
 import einops
 from torch import nn, Tensor
 # from torch.nn import functional as Ft
@@ -59,7 +59,7 @@ class RMS(nn.Module):
 		super().__init__()
 		self.d_model = d_model
 		self.eps = eps
-		self.gains = nn.Parameter(torch.ones(d_model, dtype = self.dtype))
+		self.gains = nn.Parameter(torch.ones(d_model, dtype = dtype))
 
 	def forward(self, x: Float[Tensor, "batch_size sequence_len d_model"]) -> Float[Tensor, "batch_size sequence_len d_model"]:
 		in_dtype = x.dtype
@@ -73,7 +73,7 @@ class RMS(nn.Module):
 def silu(x):
 	return x * torch.sigmoid(x) 
 
-def swiglu(x: Float[Tensor, "... d_model"], 
+def swigluf(x: Float[Tensor, "... d_model"], 
 		   W1: Float[Tensor, "d_ff d_model"],
 		   W2: Float[Tensor, "d_model d_ff"], 
 		   W3: Float[Tensor, "d_ff d_model"]) -> Float[Tensor, "... d_model"]:
@@ -98,7 +98,7 @@ class SwiGLUFeedforward(nn.Module):
 
 	# FFN(x) = SwiGLU(x, W1, W2, W3) = W2(SiLU(W1 x) * W3 x)
 	def forward(self, x: Float[Tensor, "... d_model"]) -> Float[Tensor, "... d_model"]:
-		return swiglu(x, self.W1, self.W2, self.W3)
+		return swigluf(x, self.W1, self.W2, self.W3)
 
 class RotaryPositionEmbedding(nn.Module):
 	def __init__(self, 
@@ -131,11 +131,136 @@ class RotaryPositionEmbedding(nn.Module):
 
 		even_cols = x[...,0::2]
 		odd_cols = x[...,1::2]
-		print(f"dk: {self.d_k}\nx shape: {x.shape}\nEven cols shape: {even_cols.shape}\nOdd cols shape: {odd_cols.shape}\nToken positions shape: {token_positions.shape}\nCos cached mat shape: {self.cos_cached[token_positions].shape}")
 		even_outs = (einops.einsum(even_cols, self.cos_cached[token_positions], "... seq_len hdk, ... seq_len hdk -> ... seq_len hdk") + 
 					einops.einsum(odd_cols, -self.sin_cached[token_positions], "... seq_len hdk, ... seq_len hdk -> ... seq_len hdk"))
 		odd_outs = (einops.einsum(even_cols, self.sin_cached[token_positions], "... seq_len hdk, ... seq_len hdk -> ... seq_len hdk") +  
 					einops.einsum(odd_cols, self.cos_cached[token_positions], "... seq_len hdk, ... seq_len hdk -> ... seq_len hdk"))
-		print("even odd outs")
+
 		interleaved = einops.rearrange([even_outs, odd_outs], "two ... seq_len hdk -> ... seq_len (hdk two)")
 		return interleaved
+
+def softmax(tens: torch.tensor, dim: int) -> torch.tensor:
+	maxval = torch.amax(tens, dim, keepdim=True)
+	tensexp = torch.exp(tens - maxval)
+	tensexpsum = torch.sum(tensexp, dim, keepdim=True)
+	return tensexp / tensexpsum
+
+def attention(Q: Float[Tensor, "batch_size ... seq_lenQ d_k"], # queries
+			  K: Float[Tensor, "batch_size ... seq_lenK d_k"], # keys
+			  V: Float[Tensor, "batch_size ... seq_lenK d_v"], 
+			  mask: Bool[Tensor, "seq_lenQ seq_lenK"] | None = None) -> Float[Tensor, "batch_size ... seq_lenQ d_v"]: # values
+
+	dk = Q.shape[-1]
+	mul = einops.einsum(Q, K, "... seq_lenQ d_k, ... seq_lenK d_k -> ... seq_lenQ seq_lenK") / math.sqrt(dk)
+	masked = mul + torch.where(mask, torch.tensor(0.0, device=mask.device), float("-inf"))
+
+	return einops.einsum(softmax(masked, dim=-1), V, "... seq_lenQ seq_lenK, ... seq_lenK seq_lenV -> ... seq_lenQ seq_lenV")
+
+class AttentionHead(nn.Module):
+	def __init__(self, d_model: int, # dimension of input vector and output vector
+			  num_heads: int, # number of attention heads 
+			  max_seq_len: int,
+			  rope: RotaryPositionEmbedding | None = None,
+			  d_k: int | None = None, # dimension of learned key and query vectors
+			  d_v: int | None = None, 
+			  device: torch.device | None = None): # dimension of learned value vectors
+
+		super().__init__()
+		self.d_model = d_model
+		self.num_heads = num_heads
+		self.max_seq_len = max_seq_len
+		self.d_k = d_model // num_heads if d_k == None else d_k
+		self.d_v = d_model // num_heads if d_v == None else d_v
+
+		self.WQ = nn.Parameter(torch.empty(self.num_heads, self.d_k, self.d_model))
+		self.WK = nn.Parameter(torch.empty(self.num_heads, self.d_k, self.d_model))
+		self.WV = nn.Parameter(torch.empty(self.num_heads, self.d_v, self.d_model))
+		self.WO = nn.Parameter(torch.empty(self.num_heads * self.d_v, self.d_model))
+
+		self.register_buffer('causal_mask', torch.tril(torch.full((self.max_seq_len, self.max_seq_len), True, dtype=torch.bool)), persistent=False)
+
+		if rope == None:
+			self.do_rope = False
+		else:
+			self.do_rope = True
+			self.rope = rope
+
+		# self.do_rope = do_rope
+		# if self.do_rope:
+		# 	self.rope = RotaryPositionEmbedding(theta, self.d_k, self.max_seq_len, device)
+
+	def forward(self, x: Float[Tensor, "... seq_len d_model"], positions = None):
+		seq_len = x.shape[-2]
+		assert(seq_len <= self.max_seq_len)
+
+		Q = einops.einsum(self.WQ, x, "h dk d_model, ... seq_len d_model -> ... h seq_len dk")
+		K = einops.einsum(self.WK, x, "h dk d_model, ... seq_len d_model -> ... h seq_len dk")
+		V = einops.einsum(self.WV, x, "h dv d_model, ... seq_len d_model -> ... h seq_len dv")
+
+		if self.do_rope:
+			if positions == None:
+				pos = torch.arange(seq_len, device=x.device)  # Shape: [seq_len]
+				positions = pos.expand(x.shape[:-1])  # Shape: [..., seq_len]
+			# assert(positions != None)
+			Q = self.rope(Q, positions)
+			K = self.rope(K, positions)
+
+		# dimensions ... h seq_len dv
+		multi_head = attention(Q, K, V, self.causal_mask[:seq_len,:seq_len])
+		multi_head_concat = einops.rearrange(multi_head, "... h seq_len dv -> ... seq_len (h dv)")
+		MHA = einops.einsum(multi_head_concat, self.WO, "... seq_len hdv, hdv d_model -> ... seq_len d_model")
+
+		return MHA
+
+class TransformerBlock(nn.Module):
+	def __init__(self, 
+			  d_model: int, 
+			  num_heads: int, 
+			  max_seq_len: int,
+			  d_ff: int, 
+			  rope: RotaryPositionEmbedding | None = None):
+
+		super().__init__()
+		self.rms1 = RMS(d_model)
+		self.rms2 = RMS(d_model)
+		self.swiglu = SwiGLUFeedforward(d_model, d_ff=d_ff)
+
+		if rope == None:
+			self.attention = AttentionHead(d_model, num_heads, max_seq_len)
+			self.do_rope = False
+		else:
+			self.attention = AttentionHead(d_model, num_heads, max_seq_len, rope=rope)
+
+		
+
+	def forward(self, x: Float[Tensor, "... seq_len d_model"]): 
+		y = x + self.attention(self.rms1(x))
+		return y + self.swiglu(self.rms2(y))
+
+
+class Transformer(nn.Module):
+	def __init__(self, 
+			  vocab_size: int, 
+			  context_length: int, 
+			  num_layers: int, 
+			  d_model: int, 
+			  num_heads: int, 
+			  d_ff: int, 
+			  theta: float = 10000): # for rope
+
+		super().__init__()
+
+		self.embedding = Embedding(vocab_size, d_model)
+		assert(d_model % num_heads == 0)
+		rope = RotaryPositionEmbedding(theta, d_model // num_heads, context_length)
+		self.blocks = [TransformerBlock(d_model, num_heads, context_length, d_ff, rope) for j in num_layers]
+		self.final_RMS = RMS(d_model)
+		self.final_lin = Linear(d_model, vocab_size)
+
+	def forward(self, in_toks: Int[Tensor, "... seq_len d_model"]):
+		x = self.embedding(in_toks)
+		for b in self.blocks:
+			x = b(x)
+
+		y = self.final_lin(self.final_RMS(x))
+		return y

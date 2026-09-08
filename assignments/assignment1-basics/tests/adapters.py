@@ -11,6 +11,7 @@ from torch import Tensor
 
 import cs336_basics.tokenizer
 import cs336_basics.transformer
+import einops
 
 def run_linear(
     d_in: int,
@@ -113,7 +114,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return cs336_basics.transformer.attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -147,7 +148,18 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    seq_len = in_features.shape[-2]
+    MHA_head = cs336_basics.transformer.AttentionHead(d_model, num_heads, seq_len)
+
+    with torch.no_grad():
+        dk = d_model // num_heads
+        dv = dk
+        MHA_head.WQ.copy_(einops.rearrange(q_proj_weight, "(h dk) model -> h dk model", h = num_heads, dk = dk))
+        MHA_head.WK.copy_(einops.rearrange(k_proj_weight, "(h dk) model -> h dk model", h = num_heads, dk = dk))
+        MHA_head.WV.copy_(einops.rearrange(v_proj_weight, "(h dv) model -> h dv model", h = num_heads, dv = dv))
+        MHA_head.WO.copy_(o_proj_weight.T)
+
+    return MHA_head(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -187,7 +199,17 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    seq_len = in_features.shape[-2]
+    MHA_head = cs336_basics.transformer.AttentionHead(d_model, num_heads, max_seq_len, theta=theta, do_rope=True)
+    with torch.no_grad():
+        dk = d_model // num_heads
+        dv = dk
+        MHA_head.WQ.copy_(einops.rearrange(q_proj_weight, "(h dk) model -> h dk model", h = num_heads, dk = dk))
+        MHA_head.WK.copy_(einops.rearrange(k_proj_weight, "(h dk) model -> h dk model", h = num_heads, dk = dk))
+        MHA_head.WV.copy_(einops.rearrange(v_proj_weight, "(h dv) model -> h dv model", h = num_heads, dv = dv))
+        MHA_head.WO.copy_(o_proj_weight.T)
+
+    return MHA_head(in_features, positions = token_positions)
 
 
 def run_rope(
@@ -286,7 +308,40 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+
+
+    dk = d_model // num_heads
+    rope = cs336_basics.transformer.RotaryPositionEmbedding(theta, dk, max_seq_len)
+
+    transformer_block = cs336_basics.transformer.TransformerBlock(d_model, num_heads, max_seq_len, d_ff, rope)
+
+    with torch.no_grad():
+        dk = d_model // num_heads
+        dv = dk
+        transformer_block.attention.WQ.copy_(einops.rearrange(weights['attn.q_proj.weight'], "(h dk) model -> h dk model", h = num_heads, dk = dk))
+        transformer_block.attention.WK.copy_(einops.rearrange(weights['attn.k_proj.weight'], "(h dk) model -> h dk model", h = num_heads, dk = dk))
+        transformer_block.attention.WV.copy_(einops.rearrange(weights['attn.v_proj.weight'], "(h dv) model -> h dv model", h = num_heads, dv = dv))
+        transformer_block.attention.WO.copy_(weights['attn.output_proj.weight'].T)
+        transformer_block.rms1.gains.copy_(weights['ln1.weight'])
+        transformer_block.rms2.gains.copy_(weights['ln2.weight'])
+        transformer_block.swiglu.W1.copy_(weights['ffn.w1.weight'])
+        transformer_block.swiglu.W2.copy_(weights['ffn.w2.weight'])
+        transformer_block.swiglu.W3.copy_(weights['ffn.w3.weight'])
+
+
+    return transformer_block(in_features)
+
+def init_weights_transformer_block(transformer_block, num_heads, dk, Q, K, V, O, RMS1, RMS2, W1, W2, W3):
+    with torch.no_grad():
+        transformer_block.attention.WQ.copy_(einops.rearrange(Q, "(h dk) model -> h dk model", h = num_heads, dk = dk))
+        transformer_block.attention.WK.copy_(einops.rearrange(K, "(h dk) model -> h dk model", h = num_heads, dk = dk))
+        transformer_block.attention.WV.copy_(einops.rearrange(V, "(h dv) model -> h dv model", h = num_heads, dv = dk))
+        transformer_block.attention.WO.copy_(O.T)
+        transformer_block.rms1.gains.copy_(RMS1)
+        transformer_block.rms2.gains.copy_(RMS2)
+        transformer_block.swiglu.W1.copy_(W1)
+        transformer_block.swiglu.W2.copy_(W2)
+        transformer_block.swiglu.W3.copy_(W3)
 
 
 def run_transformer_lm(
@@ -368,7 +423,26 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+
+    transformer = cs336_basics.transformer.Transformer(vocab_size, context_length, num_layers, d_model, num_heads, d_ff, rope_theta)
+    for j, b in enumerate(transformer.blocks):
+        init_weights_transformer_block(b, num_heads, d_model // num_heads, 
+                                       weights[f"layers.{j}.attn.q_proj.weight"], 
+                                       weights[f"layers.{j}.attn.k_proj.weight"], 
+                                       weights[f"layers.{j}.attn.v_proj.weight"], 
+                                       weights[f"layers.{j}.attn.output_proj.weight"], 
+                                       weights[f"layers.{j}.ln1.weight"], 
+                                       weights[f"layers.{j}.ln2.weight"],
+                                       weights[f"layers.{j}.ffn.w1.weight"], 
+                                       weights[f"layers.{j}.ffn.w2.weight"], 
+                                       weights[f"layers.{j}.ffn.w3.weight"])
+
+    with torch.no_grad():
+        transformer.final_RMS.copy_(weights['ln_final.weight'])
+        transformer.final_lin.copy_(weights['lm_head.weight'])
+
+    return transformer(in_indices)
+
 
 
 def run_rmsnorm(
@@ -449,7 +523,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return cs336_basics.transformer.softmax(in_features, dim)
 
 
 def run_cross_entropy(
