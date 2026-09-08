@@ -15,9 +15,9 @@ import cs336_basics.transformer
 def run_linear(
     d_in: int,
     d_out: int,
-    weights: Float[Tensor, " d_out d_in"],
-    in_features: Float[Tensor, " ... d_in"],
-) -> Float[Tensor, " ... d_out"]:
+    weights: Float[Tensor, "d_out d_in"],
+    in_features: Float[Tensor, "... d_in"],
+) -> Float[Tensor, "... d_out"]:
     """
     Given the weights of a Linear layer, compute the transformation of a batched input.
 
@@ -55,8 +55,10 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    embedder = cs336_basics.transformer.Embedding(vocab_size, d_model)
+    with torch.no_grad():
+        embedder.embedding_mat.copy_(weights)
+    return embedder(token_ids)
 
 
 def run_swiglu(
@@ -85,10 +87,12 @@ def run_swiglu(
     # If your state dict keys match, you can use `load_state_dict()`
     # swiglu.load_state_dict(weights)
     # You can also manually assign the weights
-    # swiglu.w1.weight.data = w1_weight
-    # swiglu.w2.weight.data = w2_weight
-    # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    swiglu = cs336_basics.transformer.SwiGLUFeedforward(d_model, d_ff)
+    with torch.no_grad():
+        swiglu.W2.copy_(w2_weight)
+        swiglu.W1.copy_(w1_weight)
+        swiglu.W3.copy_(w3_weight)
+    return swiglu(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -205,6 +209,10 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
+
+    rope = cs336_basics.transformer.RotaryPositionEmbedding(theta, d_k, max_seq_len)
+    return rope(in_query_or_key, token_positions)
+
     raise NotImplementedError
 
 
@@ -383,7 +391,12 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+
+    RMS = cs336_basics.transformer.RMS(d_model, eps)
+    with torch.no_grad():
+        RMS.gains.copy_(weights)
+
+    return RMS(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
