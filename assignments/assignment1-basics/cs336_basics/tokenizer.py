@@ -714,10 +714,17 @@ def convert_to_npy(filepath, outpath):
 
     pprint.pp(data)
     np.save(outpath, data)
+
+def tokens(text: str, tokenizer = None):
+    if tokenizer == None:
+        tokenizer = Tokenizer.from_files("ts_train_10000_vocab.pkl", "ts_train_10000_merges.pkl", [EOT])
+
+    enc = tokenizer.encode(text)
+    return [tokenizer.vocab[j] for j in enc]
     
 
 if __name__ == '__main__':
-    main()
+    # main()
     tiny_stories_tok = Tokenizer.from_files("ts_train_10000_vocab.pkl", "ts_train_10000_merges.pkl", [EOT])
     owt_tok = Tokenizer.from_files("owt_valid_10000_vocab.pkl", "owt_valid_10000_merges.pkl", [EOT])
 
