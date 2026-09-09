@@ -12,6 +12,7 @@ from torch import Tensor
 import cs336_basics.tokenizer
 import cs336_basics.transformer
 import cs336_basics.training
+import cs336_basics.nn_utils
 import einops
 
 def run_linear(
@@ -510,7 +511,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return cs336_basics.training.get_batch(dataset, batch_size, context_length, device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -526,7 +527,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    return cs336_basics.transformer.softmax(in_features, dim)
+    return cs336_basics.nn_utils.softmax(in_features, dim)
 
 
 def run_cross_entropy(
@@ -545,7 +546,7 @@ def run_cross_entropy(
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
 
-    return cs336_basics.training.cross_entropy(inputs, targets)
+    return cs336_basics.nn_utils.cross_entropy(inputs, targets)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
@@ -557,7 +558,7 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    return cs336_basics.nn_utils.graddient_clipping(parameters, max_l2_norm)
 
 
 def get_adamw_cls() -> Any:
@@ -592,7 +593,7 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    return cs336_basics.training.lr_cosine_schedule(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
 def run_save_checkpoint(

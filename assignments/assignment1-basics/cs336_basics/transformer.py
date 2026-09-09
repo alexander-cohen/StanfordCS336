@@ -4,6 +4,7 @@ import torch
 from jaxtyping import Float, Int, Bool
 import einops
 from torch import nn, Tensor
+from cs336_basics.nn_utils import softmax
 # from torch.nn import functional as Ft
 # from torch.nn.functional import softmax
 # from dataclasses import dataclass
@@ -140,12 +141,6 @@ class RotaryPositionEmbedding(nn.Module):
 
 		interleaved = einops.rearrange([even_outs, odd_outs], "two ... seq_len hdk -> ... seq_len (hdk two)")
 		return interleaved
-
-def softmax(tens: torch.tensor, dim: int) -> torch.tensor:
-	maxval = torch.amax(tens, dim, keepdim=True)
-	tensexp = torch.exp(tens - maxval)
-	tensexpsum = torch.sum(tensexp, dim, keepdim=True)
-	return tensexp / tensexpsum
 
 def attention(Q: Float[Tensor, "batch_size ... seq_lenQ d_k"], # queries
 			  K: Float[Tensor, "batch_size ... seq_lenK d_k"], # keys

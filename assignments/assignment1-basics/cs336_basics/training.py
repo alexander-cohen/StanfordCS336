@@ -4,7 +4,7 @@ import torch
 from jaxtyping import Float, Int, Bool
 import einops
 from torch import nn, Tensor
-import cs336_basics.transformer
+from cs336_basics.nn_utils import softmax
 from collections.abc import Callable, Iterable
 from typing import Optional
 import matplotlib.pyplot as plt
@@ -12,21 +12,10 @@ import numpy as np
 
 
 
-def cross_entropy(pred_logits: Float[Tensor, "... vocab_size"], 
-                  targets: Int[Tensor, "..."]):
-
-    # -log(exp(o_i) / sum_j exp(o_j)) = -o_i + log(sum_j exp(o_j))
-    pred_logits = pred_logits.to(torch.float32)
-    max_val = torch.amax(pred_logits, dim=-1, keepdim=True)
-    subtracted = pred_logits - max_val
-    summed = torch.sum(torch.exp(subtracted), dim=-1, keepdim=True)
-    neglogprob = -subtracted.gather(-1, targets[..., None]) + torch.log(summed)
-    return torch.mean(neglogprob)
-
 def old_cross_entropy(pred_logits: Float[Tensor, "... vocab_size"], 
                   targets: Int[Tensor, "..."]):
 
-    softmaxd = cs336_basics.transformer.softmax(pred_logits, dim=-1)
+    softmaxd = softmax(pred_logits, dim=-1)
     neglogprob = -torch.log(softmaxd[targets])
     return torch.mean(neglogprob)
 
@@ -110,6 +99,50 @@ class AdamW(torch.optim.Optimizer):
                 state['v'] = beta2 * state['v'] + (1 - beta2) * p.grad**2
                 p.data = p.data - cur_rate * state['m'] / (torch.sqrt(state['v']) + ep)
                 
+def lr_cosine_schedule(t, lr_max, lr_min, T_warmup, T_final_anneal):
+    if t < T_warmup:
+        return (t / T_warmup) * lr_max
+    elif t <= T_final_anneal:
+        t_an = t - T_warmup
+        full_time = T_final_anneal - T_warmup
+        return lr_min + (1/2) * (1 + math.cos( math.pi * t_an / full_time )) * (lr_max - lr_min)
+    else:
+        return lr_min
+
+
+# takes in numpy array of token IDs, batch_size, context_length, and a pytorch device string
+# outputs an iterable of batches, each of which is a tuple of input tokens and next-token targets
+def get_batch(x: npt.NDArray, batch_size, context_length, device='cpu'):
+    xsize = x.shape[0]
+
+    inds = torch.tensor(random.choices(range(xsize - context_length), k=batch_size))
+
+    idx = torch.tensor(inds).view(-1, 1)  # Reshape to column vector: [[2], [7], [4]]
+
+    # 3. Create the 2D index matrix using broadcasting
+    # This adds j offsets (0, 1, 2) to each element in idx
+    j_offsets = torch.arange(context_length).view(1, -1)  # Row vector: [[0, 1, 2]]
+    in_indices = idx + j_offsets 
+    out_indices = idx + j_offsets +1 
+
+    # 4. Gather the elements from x_tensor
+    in_tens = torch.tensor(x[in_indices], device=device)
+    out_tens =  torch.tensor(x[out_indices], device=device)
+
+    return in_tens, out_tens
+
+def save_checkpoint(model: torch.nn.Module, 
+                    optimizer: torch.optim.Optimizer, 
+                    iteration: int, 
+                    out # pathlike):
+    torch.save({'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'iteration': iteration}, out)
+
+def load_checkpoint(src, # pathlike
+                    model: torch.nn.Module, 
+                    optimizer: torch.optim.Optimizer):
+        saved = torch.
 
 def main():
     runs = {}
@@ -144,51 +177,9 @@ def main():
     plt.clf()
 
 
-# def _optimize(opt_class) -> torch.Tensor:
-#     torch.manual_seed(42)
-#     model = torch.nn.Linear(3, 2, bias=False)
-#     opt = opt_class(
-#         model.parameters(),
-#         lr=1e-3,
-#         weight_decay=0.01,
-#         betas=(0.9, 0.999),
-#         eps=1e-8,
-#     )
-#     # Use 1000 optimization steps for testing
-#     for _ in range(1000):
-#         opt.zero_grad()
-#         x = torch.rand(model.in_features)
-#         y_hat = model(x)
-#         y = torch.tensor([x[0] + x[1], -x[2]])
-#         loss = ((y - y_hat) ** 2).sum()
-#         loss.backward()
-#         opt.step()
-#     return model.weight.detach()
-
-
-# def test_adamw(numpy_snapshot):
-#     """
-#     Our reference implementation yields slightly different results than the
-#     PyTorch AdamW, since there are a couple different ways that you can apply
-#     weight decay that are equivalent in principle, but differ in practice due to
-#     floating point behavior. So, we test that the provided implementation matches
-#     _either_ our reference implementation's expected results or those from the PyTorch AdamW.
-#     """
-#     # expected_weights = torch.load(FIXTURES_PATH / "adamw_expected_params.pt")
-#     pytorch_weights = _optimize(torch.optim.AdamW)
-#     actual_weights = _optimize(AdamW)
-
-#     # Might need to exit early if the weights match pytorch, since that should also be valid
-#     matches_pytorch = torch.allclose(actual_weights, pytorch_weights, atol=1e-4)
-#     if matches_pytorch:
-#         return
-
-#     numpy_snapshot.assert_match(
-#         actual_weights,
-#         atol=1e-4,
-#     )
-
 
 
 if __name__ == "__main__":
     pass
+
+
