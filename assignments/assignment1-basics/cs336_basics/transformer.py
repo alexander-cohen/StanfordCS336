@@ -4,7 +4,10 @@ import torch
 from jaxtyping import Float, Int, Bool
 import einops
 from torch import nn, Tensor
+import cs336_basics
 from cs336_basics.nn_utils import softmax
+import cs336_basics.nn_utils
+import cs336_basics.tokenizer
 # from torch.nn import functional as Ft
 # from torch.nn.functional import softmax
 # from dataclasses import dataclass
@@ -249,6 +252,7 @@ class Transformer(nn.Module):
 
 		self.embedding = Embedding(vocab_size, d_model)
 		assert(d_model % num_heads == 0)
+		self.context_length = context_length
 		rope = RotaryPositionEmbedding(theta, d_model // num_heads, context_length)
 		self.blocks = nn.ModuleList([TransformerBlock(d_model, num_heads, context_length, d_ff, rope) for j in range(num_layers)])
 		self.final_RMS = RMS(d_model)
