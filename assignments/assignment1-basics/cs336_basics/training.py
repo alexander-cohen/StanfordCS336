@@ -53,13 +53,10 @@ class AdamW(torch.optim.Optimizer):
 
         super().__init__(params, defaults)
 
-        print("\nParams:\n", list(params))
-        print("Init state dict:", self.state)
         for p in self.state.keys():
             self.state[p]['m'] = torch.zeros(p.shape)
             self.state[p]['v'] = torch.zeros(p.shape)
 
-        print("Init'd state dict:", self.state)
 
 
     def step(self, closure: Optional[Callable] = None):
@@ -112,7 +109,7 @@ def lr_cosine_schedule(t, lr_max, lr_min, T_warmup, T_final_anneal):
 
 # takes in numpy array of token IDs, batch_size, context_length, and a pytorch device string
 # outputs an iterable of batches, each of which is a tuple of input tokens and next-token targets
-def get_batch(x: npt.NDArray, batch_size, context_length, device='cpu'):
+def get_batch(x, batch_size, context_length, device='cpu'):
     xsize = x.shape[0]
 
     inds = torch.tensor(random.choices(range(xsize - context_length), k=batch_size))
@@ -134,15 +131,18 @@ def get_batch(x: npt.NDArray, batch_size, context_length, device='cpu'):
 def save_checkpoint(model: torch.nn.Module, 
                     optimizer: torch.optim.Optimizer, 
                     iteration: int, 
-                    out # pathlike):
-    torch.save({'model': model.state_dict(),
-        'optimizer': optimizer.state_dict(),
-        'iteration': iteration}, out)
+                    out): # pathlike
+    out_dict = {'model': model.state_dict(), 'optimizer': optimizer.state_dict(), 'iteration': iteration}
+    torch.save(out_dict, out)
 
 def load_checkpoint(src, # pathlike
                     model: torch.nn.Module, 
                     optimizer: torch.optim.Optimizer):
-        saved = torch.
+        saved = torch.load(src)
+        iter = saved['iteration']
+        model.load_state_dict(saved['model'])
+        optimizer.load_state_dict(saved['optimizer'])
+        return iter
 
 def main():
     runs = {}
