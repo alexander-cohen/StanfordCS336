@@ -21,6 +21,7 @@ class Linear(nn.Module):
 		super().__init__()
 		self.in_features = in_features
 		self.out_features = out_features
+		self.dtype = dtype
 		self.weights = nn.Parameter(torch.empty(out_features, in_features, dtype=self.dtype))
 
 		var = 2/(in_features + out_features)
@@ -43,6 +44,7 @@ class Embedding(nn.Module):
 
 		self.num_embeddings = num_embeddings
 		self.embedding_dim = embedding_dim
+		self.dtype = dtype
 		self.embedding_mat = nn.Parameter(torch.empty(num_embeddings, embedding_dim, dtype=self.dtype))
 		nn.init.trunc_normal_(self.embedding_mat, mean=0.0, std = 1, a = -3, b = 3)
 
@@ -253,11 +255,11 @@ class Transformer(nn.Module):
 		self.embedding = Embedding(vocab_size, d_model)
 		assert(d_model % num_heads == 0)
 		rope = RotaryPositionEmbedding(theta, d_model // num_heads, context_length)
-		self.blocks = [TransformerBlock(d_model, num_heads, context_length, d_ff, rope) for j in num_layers]
+		self.blocks = nn.ModuleList([TransformerBlock(d_model, num_heads, context_length, d_ff, rope) for j in range(num_layers)])
 		self.final_RMS = RMS(d_model)
 		self.final_lin = Linear(d_model, vocab_size)
 
-	def forward(self, in_toks: Int[Tensor, "... seq_len d_model"]):
+	def forward(self, in_toks: Int[Tensor, "... seq_len"]):
 		x = self.embedding(in_toks)
 		for b in self.blocks:
 			x = b(x)

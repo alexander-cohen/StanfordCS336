@@ -201,7 +201,8 @@ def run_multihead_self_attention_with_rope(
         implementation with the given QKV projection weights and input features.
     """
     seq_len = in_features.shape[-2]
-    MHA_head = cs336_basics.transformer.AttentionHead(d_model, num_heads, max_seq_len, theta=theta, do_rope=True)
+    rope = cs336_basics.transformer.RotaryPositionEmbedding(theta, d_model // num_heads, max_seq_len)
+    MHA_head = cs336_basics.transformer.AttentionHead(d_model, num_heads, max_seq_len, rope=rope)
     with torch.no_grad():
         dk = d_model // num_heads
         dv = dk
@@ -439,8 +440,9 @@ def run_transformer_lm(
                                        weights[f"layers.{j}.ffn.w3.weight"])
 
     with torch.no_grad():
-        transformer.final_RMS.copy_(weights['ln_final.weight'])
-        transformer.final_lin.copy_(weights['lm_head.weight'])
+        transformer.embedding.embedding_mat.copy_(weights['token_embeddings.weight'])
+        transformer.final_RMS.gains.copy_(weights['ln_final.weight'])
+        transformer.final_lin.weights.copy_(weights['lm_head.weight'])
 
     return transformer(in_indices)
 
@@ -485,7 +487,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return cs336_basics.transformer.silu(in_features)
 
 
 def run_get_batch(
