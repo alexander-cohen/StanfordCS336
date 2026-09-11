@@ -162,3 +162,9 @@ cython_debug/
 
 .ruff_cache/
 *.zip
+
+# Machine-local experiment inputs and generated artifacts.
+# Configurations, manifests, and research notes remain version-controlled.
+/data
+/runs
+/wandb
