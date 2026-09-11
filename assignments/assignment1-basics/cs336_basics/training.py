@@ -15,7 +15,13 @@ import cs336_basics.transformer as transformer
 from cs336_basics.transformer import ModelConfig
 import cs336_basics.decode as decode
 from tests.conftest import vocab_size
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+from contextlib import ExitStack
+import hashlib
+import json
+import logging
+import uuid
+from cs336_basics.run_io import atomic_save, capture_rng, restore_rng, write_event
 import pprint
 import random
 import time
@@ -207,6 +213,8 @@ def save_checkpoint(
     if other_dat is None:
         other_dat = {}
 
+    if {"model", "optimizer", "iteration"} & other_dat.keys():
+        raise ValueError("Checkpoint metadata cannot override model, optimizer, or iteration")
     out_dict = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -216,14 +224,14 @@ def save_checkpoint(
 
     if isinstance(out, (str, os.PathLike)):
         out = Path(out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-    torch.save(out_dict, out)
+        atomic_save(out_dict, out)
+    else:
+        torch.save(out_dict, out)
 
 def load_checkpoint(src, # pathlike
                     model: torch.nn.Module, 
                     optimizer: torch.optim.Optimizer):
-        saved = torch.load(src)
+        saved = torch.load(src, map_location="cpu", weights_only=True)
         iter = saved['iteration']
         model.load_state_dict(saved['model'])
         optimizer.load_state_dict(saved['optimizer'])
@@ -237,89 +245,155 @@ def grad_norm(parameters):
     return grad_norm
 
 
+## old version written by me was replaced by codex version for better logging
+def training_loop(
+    x, model_params: ModelConfig, training_params: TrainingConfig,
+    checkpoint_out=None, verbose=True, tok=None, prompt="",
+    *, log_every=1, resume_from=None, stop_after=None, resolved_config=None,
+):
+    """Train with scalar logs and resumable snapshots.
 
-def training_loop(x, model_params: ModelConfig, training_params: TrainingConfig, checkpoint_out = None, verbose=True, tok = None, prompt=""):
-    if verbose:
-        print("Starting training run:")
-        print("Model params:")
-        pprint.pp(model_params)
-        print("Training params:")
-        pprint.pp(training_params)
+    checkpoint_out is a NEW attempt directory. On resume, use a new directory
+    so metrics after an older checkpoint never conflict with an existing history.
+    stop_after is an absolute completed-step boundary for interruption tests;
+    it does not change the planned budget or learning-rate schedule.
+    """
+    if log_every <= 0 or training_params.save_dist <= 0 or training_params.training_steps <= 0:
+        raise ValueError("Logging cadence, checkpoint cadence, and training steps must be positive")
+    if len(x) <= model_params.context_length:
+        raise ValueError("Training data must be longer than context_length")
+    end_step = training_params.training_steps if stop_after is None else stop_after
+    if not 0 < end_step <= training_params.training_steps:
+        raise ValueError("stop_after must lie within the planned training budget")
 
-    model = transformer.Transformer.from_model_params(model_params).to(training_params.device)
-    opt = AdamW.from_training_params(model.parameters(), training_params)
-
-    num_params = sum(p.numel() for p in model.parameters())
-
-    tracked_quantities = {
-        'iter': [],
-        'flop': [],
-        'toks_seen': [],
-        'params': num_params,
-        'cross_entropy': [],
-        'clipped_grad_norm': [],
-        'unclipped_grad_norm': [],
-        'wall_clock': [],
-        'flop_seen': [],
-        'model_params': model_params, 
-        'training_params': training_params
+    device = torch.device(training_params.device)
+    # Store plain configuration values, not pickled dataclass instances.
+    configuration = {
+        "model": asdict(model_params),
+        "training": {**asdict(training_params), "device": str(device)},
+        "experiment": resolved_config,
     }
+    config_json = json.dumps(configuration, sort_keys=True, default=str)
+    config_hash = hashlib.sha256(config_json.encode()).hexdigest()
+    # Include the actual token bytes: equal shapes alone do not identify a dataset.
+    data_hash = hashlib.sha256()
+    for offset in range(0, len(x), 1_000_000):
+        data_hash.update(np.ascontiguousarray(x[offset:offset + 1_000_000]).tobytes())
+    data_identity = {"sha256": data_hash.hexdigest(), "shape": list(x.shape), "dtype": str(x.dtype)}
 
-    
-    toks_seen = 0
-    start_time = time.perf_counter()
-    for it in range(1, training_params.training_steps+1):
-        tracked_quantities['iter'].append(it)
+    model = transformer.Transformer.from_model_params(model_params).to(device)
+    opt = AdamW.from_training_params(model.parameters(), training_params)
+    start_step, tokens_seen, elapsed_before = 0, 0, 0.0
+    run_id = uuid.uuid4().hex
+    if resume_from is not None:
+        saved = torch.load(resume_from, map_location="cpu", weights_only=True)
+        if saved.get("format_version") != 1:
+            raise ValueError("This checkpoint lacks the state needed for training resume")
+        if saved["config_hash"] != config_hash or saved["data_identity"] != data_identity:
+            raise ValueError("Resume configuration or training data differs from the checkpoint")
+        start_step = saved["iteration"]
+        if not start_step < end_step:
+            raise ValueError("Resume checkpoint must precede the requested stopping step")
+        model.load_state_dict(saved["model"])
+        opt.load_state_dict(saved["optimizer"])
+        tokens_seen, elapsed_before = saved["tokens_seen"], saved["elapsed_seconds"]
+        run_id = saved["run_id"]
+        # Model construction consumes randomness. Restore AFTER constructing/loading.
+        restore_rng(saved["rng"])
 
-        # get batch
-        in_toks, out_toks = get_batch(
-            x,
-            training_params.batch_size,
-            model_params.context_length,
-            training_params.device,
-        )
+    attempt_id = uuid.uuid4().hex
+    logger = logging.getLogger(f"cs336.training.{attempt_id}")
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    with ExitStack() as stack:
+        if verbose:
+            handler = logging.StreamHandler()
+            logger.addHandler(handler)
+            stack.callback(handler.close)
+            stack.callback(logger.removeHandler, handler)
+        metrics = events = None
+        output = None
+        if checkpoint_out is not None:
+            output = Path(checkpoint_out)
+            # Never silently overwrite an existing attempt or its evidence.
+            output.mkdir(parents=True, exist_ok=False)
+            (output / "config.resolved.json").write_text(config_json + "\n")
+            metrics = stack.enter_context((output / "metrics.jsonl").open("x"))
+            events = stack.enter_context((output / "events.jsonl").open("x"))
 
-        # get logits
-        pred_logits = model(in_toks)
+        def event(kind, **fields):
+            if events is not None:
+                write_event(events, {"event": kind, "run_id": run_id, "attempt_id": attempt_id, **fields})
 
-        # compute cross entropy loss
-        opt.zero_grad()
-        loss = nn_utils.cross_entropy(pred_logits, out_toks)
-        tracked_quantities['cross_entropy'].append(loss.item())
-        loss.backward()
+        event("resume" if resume_from is not None else "start", step=start_step,
+              checkpoint=str(resume_from) if resume_from is not None else None)
+        started = time.perf_counter()
+        last_metric = None
+        try:
+            model.train()
+            for step in range(start_step + 1, end_step + 1):
+                inputs, targets = get_batch(x, training_params.batch_size, model_params.context_length, device)
+                opt.zero_grad()
+                loss = nn_utils.cross_entropy(model(inputs), targets)
+                if not torch.isfinite(loss).item():
+                    raise FloatingPointError(f"Non-finite loss at step {step}")
+                loss.backward()
+                before_clip = grad_norm(model.parameters())
+                if not math.isfinite(before_clip):
+                    raise FloatingPointError(f"Non-finite gradient norm at step {step}")
+                nn_utils.gradient_clipping(model.parameters(), training_params.grad_clip)
+                after_clip = grad_norm(model.parameters())
+                lr = training_params.learning_rate_at(step)
+                opt.set_lr(lr)
+                opt.step()
+                tokens_seen += training_params.batch_size * model_params.context_length
+                # Accelerator work is asynchronous; synchronize for meaningful timings.
+                if device.type == "cuda":
+                    torch.cuda.synchronize(device)
+                elif device.type == "mps":
+                    torch.mps.synchronize()
+                elapsed = elapsed_before + time.perf_counter() - started
+                last_metric = {
+                    "run_id": run_id, "attempt_id": attempt_id, "step": step,
+                    "tokens_seen": tokens_seen, "train_loss": loss.item(), "learning_rate": lr,
+                    "grad_norm": before_clip, "clipped_grad_norm": after_clip,
+                    "elapsed_seconds": elapsed,
+                }
+                if step % log_every == 0 or step == end_step:
+                    if metrics is not None:
+                        write_event(metrics, last_metric)
+                    logger.info("step=%d tokens=%d loss=%.6f lr=%g", step, tokens_seen, loss.item(), lr)
 
-        # apply gradient clipping
-        tracked_quantities['unclipped_grad_norm'].append(grad_norm(model.parameters()))
-        nn_utils.gradient_clipping(model.parameters(), training_params.grad_clip)
-        tracked_quantities['clipped_grad_norm'].append(grad_norm(model.parameters()))
-
-        toks_seen += training_params.batch_size * model.context_length
-        tracked_quantities['toks_seen'].append(toks_seen)
-        tracked_quantities['flop_seen'].append(6*num_params*toks_seen)
-
-        opt.set_lr(training_params.learning_rate_at(it))
-
-        opt.step()
-
-        tracked_quantities['wall_clock'].append(time.perf_counter() - start_time)
-        print(f"\nIter: {it}\n"
-              f"Cross entropy: {loss:.4f}\n"
-            #   f"Unclipped grad norm: {tracked_quantities['unclipped_grad_norm'][-1]:.4f}\n"
-              f"Clipped grad norm: {tracked_quantities['clipped_grad_norm'][-1]:.4f}\n"
-              f"Tokens seen: {tracked_quantities['toks_seen'][-1]:.4f}\n"
-              f"Seconds since start: {tracked_quantities['wall_clock'][-1]:.2f}s\n"
-              f"tflop since start: {tracked_quantities['flop_seen'][-1]/1e12:.2f}\n"
-              f"tflop/s: {(tracked_quantities['flop_seen'][-1] / tracked_quantities['wall_clock'][-1])/1e12:.2f}")
-        
-        # save checkpoint
-        if it % training_params.save_dist == 0 or it == training_params.training_steps: 
-            print(f"At checkpoint iter {it}/{training_params.training_steps}, {it/training_params.training_steps:.2%}")
-            if tok is not None:
-                print("Sample:")
-                print(tok.decode(decode.decode(model, tok, "My good friend Agustin said:", 20, temperature = 0.3)))
-            if checkpoint_out is not None:
-                print("Saved.")
-                save_checkpoint(model, opt, it, f"{checkpoint_out}/{it}.pt", other_dat = tracked_quantities)
+                if step % training_params.save_dist == 0 or step == end_step:
+                    if output is not None:
+                        # History lives in JSONL; only continuation state goes here.
+                        destination = output / f"{step}.pt"
+                        save_checkpoint(model, opt, step, destination, other_dat={
+                            "format_version": 1, "run_id": run_id, "attempt_id": attempt_id,
+                            "tokens_seen": tokens_seen, "elapsed_seconds": elapsed,
+                            "config_hash": config_hash, "configuration": configuration,
+                            "data_identity": data_identity, "rng": capture_rng(device),
+                        })
+                        event("checkpoint", step=step, path=str(destination))
+                        logger.info("Saved checkpoint %s", destination)
+                    if tok is not None:
+                        # Sampling must not change subsequent training randomness.
+                        rng = capture_rng(device)
+                        model.eval()
+                        try:
+                            with torch.no_grad():
+                                sample = tok.decode(decode.decode(
+                                    model, tok, prompt or "My good friend Agustin said:", 20, temperature=0.3))
+                            event("sample", step=step, text=sample)
+                            logger.info("Sample: %s", sample)
+                        finally:
+                            model.train()
+                            restore_rng(rng)
+            event("complete" if end_step == training_params.training_steps else "paused", step=end_step)
+        except BaseException as error:
+            event("error", error_type=type(error).__name__, message=str(error))
+            raise
+    return {"model": model, "optimizer": opt, "last_metric": last_metric, "run_id": run_id}
 
 
 
@@ -361,4 +435,3 @@ def main():
 
 if __name__ == "__main__":
     pass
-
