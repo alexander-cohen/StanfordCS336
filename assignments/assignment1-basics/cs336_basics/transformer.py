@@ -225,7 +225,7 @@ class AttentionHead(nn.Module):
 
 		self.register_buffer('causal_mask', torch.tril(torch.full((self.max_seq_len, self.max_seq_len), True, dtype=torch.bool)), persistent=False)
 
-		if pe == None:
+		if rope == None:
 			self.do_rope = False
 		else:
 			self.do_rope = True
