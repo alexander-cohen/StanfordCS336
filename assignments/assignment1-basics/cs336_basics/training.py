@@ -1,14 +1,19 @@
 import math
 from typing import Dict
+from matplotlib.font_manager import weight_dict
 import torch
 from jaxtyping import Float, Int, Bool
 import einops
 from torch import nn, Tensor
+from cs336_basics import nn_utils
 from cs336_basics.nn_utils import softmax
 from collections.abc import Callable, Iterable
-from typing import Optional
+from typing import Literal, Optional
 import matplotlib.pyplot as plt
 import numpy as np
+import cs336_basics.transformer as transformer
+from tests.conftest import vocab_size
+from dataclasses import dataclass
 
 
 
@@ -41,7 +46,7 @@ class SGD(torch.optim.Optimizer):
                 return loss
 
 class AdamW(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps = 1e-8, weight_decay = 0):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps = 1e-8, weight_decay = 0.0):
         if lr < 0:
             raise ValueError(f"Invalid learning rate: {lr}")
 
@@ -57,7 +62,9 @@ class AdamW(torch.optim.Optimizer):
             self.state[p]['m'] = torch.zeros(p.shape)
             self.state[p]['v'] = torch.zeros(p.shape)
 
-
+    def set_lr(self, lr):
+        for group in self.param_groups:
+            group["lr"] = lr
 
     def step(self, closure: Optional[Callable] = None):
         loss = None if closure is None else closure()
@@ -92,6 +99,7 @@ class AdamW(torch.optim.Optimizer):
                 if 'v' not in state:
                     state['v'] = torch.zeros(p.shape)
 
+
                 state['m'] = beta1 * state['m'] + (1 - beta1) * p.grad
                 state['v'] = beta2 * state['v'] + (1 - beta2) * p.grad**2
                 p.data = p.data - cur_rate * state['m'] / (torch.sqrt(state['v']) + ep)
@@ -109,7 +117,7 @@ def lr_cosine_schedule(t, lr_max, lr_min, T_warmup, T_final_anneal):
 
 # takes in numpy array of token IDs, batch_size, context_length, and a pytorch device string
 # outputs an iterable of batches, each of which is a tuple of input tokens and next-token targets
-def get_batch(x, batch_size, context_length, device='cpu'):
+def get_batch(x, batch_size, context_length, device=torch.device('cpu')):
     xsize = x.shape[0]
 
     inds = torch.tensor(random.choices(range(xsize - context_length), k=batch_size))
@@ -143,6 +151,146 @@ def load_checkpoint(src, # pathlike
         model.load_state_dict(saved['model'])
         optimizer.load_state_dict(saved['optimizer'])
         return iter
+
+def grad_norm(parameters):
+    grad_norm = 0
+    for p in parameters:
+        grad_norm += torch.linalg.norm(p.grad)**2
+    grad_norm = math.sqrt(grad_norm)
+
+@dataclass(frozen=True)
+class ModelConfig:
+    vocab_size: int
+    context_length: int
+    num_heads: int
+    num_layers: int
+    d_model: int
+    d_ff: int
+    rope_theta: float = 10000.
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    batch_size: int
+    training_steps: int
+    save_dist: int
+    grad_clip: float
+    device: torch.device
+    lr_mode: Literal["basic", "cosine_scheduled"]
+    eps: float = 1e-8
+    weight_decay: float = 0.0
+    betas: tuple[float, float] = (0.9, 0.999)
+    lr: float | None = None
+    time_warmup: int | None = None
+    time_final_anneal: int | None = None
+    lr_max: float | None = None
+    lr_min: float | None = None
+
+    def __post_init__(self):
+        if self.lr_mode == "basic":
+            if self.lr is None:
+                raise ValueError("lr is required when lr_mode='basic'")
+            return
+
+        schedule_values = (self.time_warmup, self.time_final_anneal, self.lr_max, self.lr_min)
+        if any(value is None for value in schedule_values):
+            raise ValueError(
+                "time_warmup, time_final_anneal, lr_max, and lr_min are required "
+                "when lr_mode='cosine_scheduled'"
+            )
+
+    def learning_rate_at(self, step: int) -> float:
+        if self.lr_mode == "basic":
+            if self.lr is None:
+                raise RuntimeError("basic learning-rate configuration was not validated")
+            return self.lr
+
+        if (
+            self.time_warmup is None
+            or self.time_final_anneal is None
+            or self.lr_max is None
+            or self.lr_min is None
+        ):
+            raise RuntimeError("cosine learning-rate configuration was not validated")
+        return lr_cosine_schedule(
+            step,
+            self.lr_max,
+            self.lr_min,
+            self.time_warmup,
+            self.time_final_anneal,
+        )
+
+
+
+def training_loop(x, model_params: ModelConfig, training_params: TrainingConfig, verbose=True):
+    model = transformer.Transformer(
+        vocab_size=model_params.vocab_size,
+        context_length=model_params.context_length,
+        num_layers=model_params.num_layers,
+        d_model=model_params.d_model,
+        num_heads=model_params.num_heads,
+        d_ff=model_params.d_ff,
+        theta=model_params.rope_theta,
+    ).to(training_params.device)
+
+    opt = AdamW(
+        model.parameters(),
+        betas=training_params.betas,
+        eps=training_params.eps,
+        lr=training_params.learning_rate_at(0),
+        weight_decay=training_params.weight_decay,
+    )
+
+    tracked_quantities = {
+        'iter': [],
+        'cross_entropy': [],
+        'clipped_grad_norm': [],
+        'unclipped_grad_norm': []
+    }
+    for it in range(1, training_params.training_steps):
+        tracked_quantities['iter'].append(id)
+        # save checkpoint
+        if it % training_params.save_dist == 0:
+            pass
+
+        # get batch
+        in_toks, out_toks = get_batch(
+            x,
+            training_params.batch_size,
+            model_params.context_length,
+            training_params.device,
+        )
+
+        # get logits
+        pred_logits = model(in_toks)
+
+        # compute cross entropy loss
+        opt.zero_grad()
+        loss = nn_utils.cross_entropy(pred_logits, out_toks)
+        tracked_quantities['cross_entropy'].append(loss)
+        loss.backward()
+
+        # apply gradient clipping
+        tracked_quantities['unclipped_grad_norm'].append(grad_norm(model.parameters()))
+        nn_utils.gradient_clipping(model.parameters(), training_params.grad_clip)
+        tracked_quantities['clipped_grad_norm'].append(grad_norm(model.parameters()))
+
+        
+
+        print(f"\nIter: {it}\n"
+              f"Cross entropy: {loss:.4f}\n"
+              f"Grad norm: {grad_norm:.4f}")
+
+
+        opt.set_lr(training_params.learning_rate_at(it))
+
+        opt.step()
+        
+
+
+
+
+
 
 def main():
     runs = {}
@@ -181,5 +329,4 @@ def main():
 
 if __name__ == "__main__":
     pass
-
 

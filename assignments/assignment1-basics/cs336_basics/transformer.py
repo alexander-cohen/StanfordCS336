@@ -12,13 +12,10 @@ import cs336_basics.tokenizer
 # from torch.nn.functional import softmax
 # from dataclasses import dataclass
 
-## TODO: Implement device in modules
-
 class Linear(nn.Module):
 	def __init__(self, 
 		in_features: int, # final dimension of the input 
 		out_features: int, # final dimension of the output)
-		device: torch.device | None = None, # device to store params on, 
 		dtype: torch.dtype = torch.float32): # data type of params
 
 		
@@ -42,7 +39,6 @@ class Embedding(nn.Module):
 	def __init__(self, 
 			  num_embeddings: Int, # size of vocabulary
 			  embedding_dim: Int, # dimension of embedding vectors 
-			  device: torch.device | None = None, # device to store params on
 			  dtype: torch.dtype = torch.float32):
 		super().__init__()
 
@@ -59,7 +55,6 @@ class RMS(nn.Module):
 	def __init__(self,
 			  d_model: int, # hidden dimension
 			  eps: float = 1e-5, # epsilon value for numerical stability of RMS
-			  device: torch.device | None = None, 
 			  dtype: torch.dtype = torch.float32):
 
 		super().__init__()
@@ -92,7 +87,6 @@ class SwiGLUFeedforward(nn.Module):
 	def __init__(self, 
 			  d_model: int, # hidden dimension
 			  d_ff: int | None = None, # intermediate dimension
-			  device: torch.device | None = None, 
 			  dtype: torch.dtype = torch.float32):
 
 		super().__init__()
@@ -110,8 +104,7 @@ class RotaryPositionEmbedding(nn.Module):
 	def __init__(self, 
 			  theta: float, # theta value for the RoPE
 			  d_k: int, # dimension of query and key vectors
-			  max_seq_len: int, # maximum sequence length that might be input
-			  device: torch.device | None = None):
+			  max_seq_len: int): # maximum sequence length that might be input
 
 		super().__init__()
 
@@ -162,8 +155,7 @@ class AttentionHead(nn.Module):
 			  max_seq_len: int,
 			  rope: RotaryPositionEmbedding | None = None,
 			  d_k: int | None = None, # dimension of learned key and query vectors
-			  d_v: int | None = None, 
-			  device: torch.device | None = None): # dimension of learned value vectors
+			  d_v: int | None = None): # dimension of learned value vectors
 
 		super().__init__()
 		self.d_model = d_model
@@ -185,9 +177,6 @@ class AttentionHead(nn.Module):
 			self.do_rope = True
 			self.rope = rope
 
-		# self.do_rope = do_rope
-		# if self.do_rope:
-		# 	self.rope = RotaryPositionEmbedding(theta, self.d_k, self.max_seq_len, device)
 
 	def forward(self, x: Float[Tensor, "... seq_len d_model"], positions = None):
 		seq_len = x.shape[-2]
