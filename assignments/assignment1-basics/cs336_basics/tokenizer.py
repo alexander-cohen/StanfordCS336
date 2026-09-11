@@ -544,7 +544,7 @@ def main():
             output_prepend = f"{path.name}_{args.vocab_size}"
 
         print(f"corpus_filepath: {corpus_filepath}, output_prepend: {output_prepend}")
-        vocab, merges = train_bpe(corpus_filepath, 10000, special_tokens, verbose = args.verbose, use_disk = args.use_disk, num_pieces = args.num_pieces)
+        vocab, merges = train_bpe(corpus_filepath, args.vocab_size, special_tokens, verbose = args.verbose, use_disk = args.use_disk, num_pieces = args.num_pieces)
         print("Vocab:")
         pprint.pp(vocab)
 

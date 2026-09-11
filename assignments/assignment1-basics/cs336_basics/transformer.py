@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import math
 from typing import Dict
 import torch
@@ -12,6 +13,12 @@ import cs336_basics.tokenizer
 # from torch.nn.functional import softmax
 # from dataclasses import dataclass
 
+def init_lin_mat(mat):
+	var = 2/(mat.shape[0] + mat.shape[1])
+	std = math.sqrt(var)
+	trunc = 3 * std
+	nn.init.trunc_normal_(mat, mean=0.0, std = std, a = -trunc, b = trunc)
+
 class Linear(nn.Module):
 	def __init__(self, 
 		in_features: int, # final dimension of the input 
@@ -25,10 +32,11 @@ class Linear(nn.Module):
 		self.dtype = dtype
 		self.weights = nn.Parameter(torch.empty(out_features, in_features, dtype=self.dtype))
 
-		var = 2/(in_features + out_features)
-		std = math.sqrt(var)
-		trunc = 3 * std
-		nn.init.trunc_normal_(self.weights, mean=0.0, std = std, a = -trunc, b = trunc)
+		init_lin_mat(self.weights)
+		# var = 2/(in_features + out_features)
+		# std = math.sqrt(var)
+		# trunc = 3 * std
+		# nn.init.trunc_normal_(self.weights, mean=0.0, std = std, a = -trunc, b = trunc)
 
 	def forward(self, x: Float[Tensor, "... in_features"]) -> Float[Tensor, "... out_features"]:
 		return einops.einsum(self.weights, x, "out_features in_features, ... in_features -> ... out_features")
@@ -95,48 +103,81 @@ class SwiGLUFeedforward(nn.Module):
 		self.W1 = nn.Parameter(torch.empty(self.d_ff, self.d_model, dtype = dtype))
 		self.W2 = nn.Parameter(torch.empty(self.d_model, self.d_ff, dtype = dtype))
 		self.W3 = nn.Parameter(torch.empty(self.d_ff, self.d_model, dtype = dtype))
+		init_lin_mat(self.W1)
+		init_lin_mat(self.W2)
+		init_lin_mat(self.W3)
+		
 
 	# FFN(x) = SwiGLU(x, W1, W2, W3) = W2(SiLU(W1 x) * W3 x)
 	def forward(self, x: Float[Tensor, "... d_model"]) -> Float[Tensor, "... d_model"]:
 		return swigluf(x, self.W1, self.W2, self.W3)
 
+# Used ChatGPT to fix mine bc it was a bit hacky
 class RotaryPositionEmbedding(nn.Module):
-	def __init__(self, 
-			  theta: float, # theta value for the RoPE
-			  d_k: int, # dimension of query and key vectors
-			  max_seq_len: int): # maximum sequence length that might be input
+    def __init__(
+        self,
+        theta: float,
+        d_k: int,
+        max_seq_len: int,
+    ):
+        super().__init__()
 
-		super().__init__()
+        assert d_k % 2 == 0
 
-		self.max_seq_len = max_seq_len
-		self.d_k = d_k
-		assert(d_k % 2 == 0)
+        self.d_k = d_k
+        self.max_seq_len = max_seq_len
 
-		inv_freq = 1.0 / (theta ** (torch.arange(0, self.d_k, 2) / self.d_k))
+        inv_freq = theta ** (
+            -torch.arange(0, d_k, 2, dtype=torch.float32) / d_k
+        )
 
-		# a max_seq_len x d_k/2 matrix with i, k entry equal to i / Theta^{(2k-2)/d_k}
-		emb = torch.outer(torch.arange(max_seq_len, dtype = torch.float32), inv_freq)
+        positions = torch.arange(max_seq_len, dtype=torch.float32)
+        angles = torch.outer(positions, inv_freq)
 
-		self.register_buffer('cos_cached', emb.cos(), persistent=False)
-		self.register_buffer('sin_cached', emb.sin(), persistent=False)
+        self.register_buffer(
+            "cos_cached",
+            angles.cos(),
+            persistent=False,
+        )
+        self.register_buffer(
+            "sin_cached",
+            angles.sin(),
+            persistent=False,
+        )
 
+    def forward(
+        self,
+        x: Float[Tensor, "... seq_len d_k"],
+        token_positions: Int[Tensor, "... seq_len"],
+    ) -> Float[Tensor, "... seq_len d_k"]:
 
-	# for k in {0,...,d/2-1}
-	# out[..., i, 2k] = x[...,i,2k] * cos_cached[i,k] - x[...,i,2k+1] * sin_cached[i,k]
-	# out[..., i, 2k+1] = x[...,i,2k] * sin_cached[i,k] + x[...,i,2k+1] * cos_cached[i,k]
-	def forward(self, 
-			 x: Float[Tensor, "... seq_len d_k"], 
-			 token_positions: Int[Tensor, "... seq_len"]) -> Float[Tensor, "... seq_len d_k"]:
+        assert x.shape[-1] == self.d_k
 
-		even_cols = x[...,0::2]
-		odd_cols = x[...,1::2]
-		even_outs = (einops.einsum(even_cols, self.cos_cached[token_positions], "... seq_len hdk, ... seq_len hdk -> ... seq_len hdk") + 
-					einops.einsum(odd_cols, -self.sin_cached[token_positions], "... seq_len hdk, ... seq_len hdk -> ... seq_len hdk"))
-		odd_outs = (einops.einsum(even_cols, self.sin_cached[token_positions], "... seq_len hdk, ... seq_len hdk -> ... seq_len hdk") +  
-					einops.einsum(odd_cols, self.cos_cached[token_positions], "... seq_len hdk, ... seq_len hdk -> ... seq_len hdk"))
+        cos = self.cos_cached[token_positions]
+        sin = self.sin_cached[token_positions]
 
-		interleaved = einops.rearrange([even_outs, odd_outs], "two ... seq_len hdk -> ... seq_len (hdk two)")
-		return interleaved
+        # For example:
+        #
+        # x:              [batch, heads, seq, d_k]
+        # token_positions:[batch, seq]
+        # cos:            [batch, seq, d_k/2]
+        #
+        # Insert singleton dimensions before the sequence dimension
+        # so cos/sin broadcast across heads.
+        while cos.ndim < x.ndim:
+            cos = cos.unsqueeze(-3)
+            sin = sin.unsqueeze(-3)
+
+        x_even = x[..., 0::2]
+        x_odd  = x[..., 1::2]
+
+        out_even = x_even * cos - x_odd * sin
+        out_odd  = x_even * sin + x_odd * cos
+
+        return torch.stack(
+            (out_even, out_odd),
+            dim=-1,
+        ).flatten(-2)
 
 def attention(Q: Float[Tensor, "batch_size ... seq_lenQ d_k"], # queries
 			  K: Float[Tensor, "batch_size ... seq_lenK d_k"], # keys
@@ -145,9 +186,11 @@ def attention(Q: Float[Tensor, "batch_size ... seq_lenQ d_k"], # queries
 
 	dk = Q.shape[-1]
 	mul = einops.einsum(Q, K, "... seq_lenQ d_k, ... seq_lenK d_k -> ... seq_lenQ seq_lenK") / math.sqrt(dk)
-	masked = mul + torch.where(mask, torch.tensor(0.0, device=mask.device), float("-inf"))
 
-	return einops.einsum(softmax(masked, dim=-1), V, "... seq_lenQ seq_lenK, ... seq_lenK seq_lenV -> ... seq_lenQ seq_lenV")
+	if mask is not None:
+		mul = mul + torch.where(mask, torch.tensor(0.0, device=mask.device), float("-inf"))
+
+	return einops.einsum(softmax(mul, dim=-1), V, "... seq_lenQ seq_lenK, ... seq_lenK seq_lenV -> ... seq_lenQ seq_lenV")
 
 class AttentionHead(nn.Module):
 	def __init__(self, d_model: int, # dimension of input vector and output vector
@@ -169,9 +212,20 @@ class AttentionHead(nn.Module):
 		self.WV = nn.Parameter(torch.empty(self.num_heads, self.d_v, self.d_model))
 		self.WO = nn.Parameter(torch.empty(self.num_heads * self.d_v, self.d_model))
 
+		var = 2/(self.num_heads * self.d_k + self.d_model)
+		std = math.sqrt(var)
+		trunc = 3 * std
+		nn.init.trunc_normal_(self.WQ, mean=0.0, std = std, a = -trunc, b = trunc)
+		nn.init.trunc_normal_(self.WK, mean=0.0, std = std, a = -trunc, b = trunc)
+		nn.init.trunc_normal_(self.WV, mean=0.0, std = std, a = -trunc, b = trunc)
+		nn.init.trunc_normal_(self.WO, mean=0.0, std = std, a = -trunc, b = trunc)
+	
+
+		init_lin_mat(self.WO)
+
 		self.register_buffer('causal_mask', torch.tril(torch.full((self.max_seq_len, self.max_seq_len), True, dtype=torch.bool)), persistent=False)
 
-		if rope == None:
+		if pe == None:
 			self.do_rope = False
 		else:
 			self.do_rope = True
@@ -227,6 +281,17 @@ class TransformerBlock(nn.Module):
 		return y + self.swiglu(self.rms2(y))
 
 
+@dataclass(frozen=True)
+class ModelConfig:
+    vocab_size: int
+    context_length: int
+    num_heads: int
+    num_layers: int
+    d_model: int
+    d_ff: int
+    rope_theta: float = 10000.
+
+
 class Transformer(nn.Module):
 	def __init__(self, 
 			  vocab_size: int, 
@@ -246,6 +311,17 @@ class Transformer(nn.Module):
 		self.blocks = nn.ModuleList([TransformerBlock(d_model, num_heads, context_length, d_ff, rope) for j in range(num_layers)])
 		self.final_RMS = RMS(d_model)
 		self.final_lin = Linear(d_model, vocab_size)
+
+	@classmethod
+	def from_model_params(cls, model_params: ModelConfig):
+		return cls(
+			vocab_size=model_params.vocab_size,
+			context_length=model_params.context_length,
+			num_layers=model_params.num_layers,
+			d_model=model_params.d_model,
+			num_heads=model_params.num_heads,
+			d_ff=model_params.d_ff,
+			theta=model_params.rope_theta)
 
 	def forward(self, in_toks: Int[Tensor, "... seq_len"]):
 		x = self.embedding(in_toks)
