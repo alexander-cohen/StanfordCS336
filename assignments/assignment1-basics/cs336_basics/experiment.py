@@ -7,6 +7,10 @@ import tomllib
 import random
 import re
 import uuid
+import signal
+import threading
+import warnings
+from contextlib import contextmanager
 from datetime import UTC, datetime
 import numpy as np
 import torch
@@ -16,8 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from cs336_basics.training import training_loop
+from cs336_basics.tokenizer import Tokenizer
 from cs336_basics.metrics import metric_logger
 from cs336_basics.run_io import atomic_json
+from cs336_basics.git_metadata import read_git_metadata
 
 
 SUPPORTED_SCHEMA_VERSION = 1
@@ -326,6 +332,29 @@ def resolve_experiment(
     }
     return resolved
 
+@contextmanager
+def _graceful_stop():
+    """First Ctrl+C requests a safe boundary; second raises KeyboardInterrupt."""
+    requested = False
+
+    def interrupt(signum, frame):
+        nonlocal requested
+        if requested:
+            raise KeyboardInterrupt
+        requested = True
+        os.write(2, b"\nStop requested: finishing the next safe step and saving. Ctrl+C again to interrupt.\n")
+
+    # Python only permits signal-handler installation in the main thread.
+    if threading.current_thread() is not threading.main_thread():
+        yield lambda: False
+        return
+    previous = signal.signal(signal.SIGINT, interrupt)
+    try:
+        yield lambda: requested
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def run_experiment(resolved, *, resume_from=None, stop_after=None, verbose=True):
     """Execute a resolved preset and return its model, metrics, and output path."""
     # Copy so selecting "auto" does not mutate the caller's configuration.
@@ -359,6 +388,15 @@ def run_experiment(resolved, *, resume_from=None, stop_after=None, verbose=True)
                 raise ExperimentConfigError(f"{label} contains token IDs outside the vocabulary")
         arrays[label] = array
 
+    # These are trusted local pickle files. The tokenizer is for readable samples;
+    # training and validation still use the pretokenized NPY arrays above.
+    tok = Tokenizer.from_files(
+        paths["tokenizer_vocab"], paths["tokenizer_merges"],
+        [resolved["tokenizer"]["end_of_text"]],
+    )
+    if set(tok.vocab) != set(range(model_config["vocab_size"])):
+        raise ExperimentConfigError("Tokenizer vocabulary IDs must match model.vocab_size")
+
     seed = resolved["experiment"]["seed"]
     random.seed(seed)
     np.random.seed(seed % (2**32))
@@ -371,24 +409,35 @@ def run_experiment(resolved, *, resume_from=None, stop_after=None, verbose=True)
     name = re.sub(r"[^A-Za-z0-9_-]+", "-", resolved["experiment"]["name"]).strip("-") or "experiment"
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = Path(paths["runs_root"]) / f"{timestamp}_{name}_{uuid.uuid4().hex[:12]}"
+    # Inspect once at launch, not during config resolution or at every step.
+    # Provenance is excluded from resume compatibility checks.
     output.mkdir(parents=True, exist_ok=False)
+    code = read_git_metadata(paths["project_root"], output=output)
+    resolved["provenance"].update(code)
+    if code["git_error"]:
+        warnings.warn(f"Code provenance unavailable: {code['git_error']}", stacklevel=2)
+    elif code["git_dirty"]:
+        warnings.warn("Working tree is dirty: saved code.diff and untracked filenames locally, but not untracked contents.", stacklevel=2)
     atomic_json(resolved, output / "config.resolved.json")
     # The loop emits dictionaries; it knows nothing about files or W&B logging.
-    with metric_logger(output, resolved, verbose=verbose) as log_metrics:
-        result = training_loop(
-            arrays['train_data'], model_config, training_config, checkpoint_out=output,
-            device=device, checkpoint_every=resolved["checkpoint"]["every_steps"],
-            keep_last=resolved["checkpoint"]["keep_last"],
-            log_every=resolved["logging"]["every_steps"], resolved_config=resolved,
-            validation_data=arrays['validation_data'], eval_every=resolved["evaluation"]["every_steps"],
-            eval_batches=resolved["evaluation"]["batches"],
-            resume_from=resume_from, stop_after=stop_after, verbose=verbose,
-            log_metrics=log_metrics,
-        )
-    # A missing summary means this execution did not finish successfully.
-    atomic_json({
-        "run_id": result["run_id"], "last_metric": result["last_metric"],
-        "status": "complete" if result["last_metric"]["step"] == training_config["steps"] else "paused",
-    }, output / "summary.json")
+    with _graceful_stop() as should_stop:
+        with metric_logger(output, resolved, verbose=verbose) as log_metrics:
+            result = training_loop(
+                arrays['train_data'], model_config, training_config, checkpoint_out=output,
+                device=device, checkpoint_every=resolved["checkpoint"]["every_steps"],
+                keep_last=resolved["checkpoint"]["keep_last"],
+                log_every=resolved["logging"]["every_steps"], resolved_config=resolved,
+                validation_data=arrays['validation_data'], eval_every=resolved["evaluation"]["every_steps"],
+                eval_batches=resolved["evaluation"]["batches"],
+                resume_from=resume_from, stop_after=stop_after, verbose=verbose,
+                tok=tok, log_metrics=log_metrics, should_stop=should_stop,
+            )
+        # Close W&B before reporting success. The handler stays active during
+        # cleanup too, so a second Ctrl+C can interrupt a slow shutdown.
+        atomic_json({
+            **code,
+            "run_id": result["run_id"], "last_metric": result["last_metric"],
+            "status": "complete" if result["last_metric"]["step"] == training_config["steps"] else "paused",
+        }, output / "summary.json")
     result["output_dir"] = output
     return result

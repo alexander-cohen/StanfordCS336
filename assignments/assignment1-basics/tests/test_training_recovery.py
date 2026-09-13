@@ -46,6 +46,13 @@ def test_resume_matches_uninterrupted(tmp_path, capsys):
     assert are_optimizers_equal(full["optimizer"].state_dict(), resumed["optimizer"].state_dict(), 0, 0)
     assert [r["step"] for r in continued] == [3, 4]
     assert [r["train_loss"] for r in original[2:]] == [r["train_loss"] for r in continued]
+    parameter_count = sum(p.numel() for p in full["model"].parameters())
+    assert [r["estimated_train_flops"] for r in original] == [
+        6 * parameter_count * step * 2 * 4 for step in range(1, 5)
+    ]
+    assert [r["estimated_train_flops"] for r in continued] == [
+        r["estimated_train_flops"] for r in original[2:]
+    ]
     saved = torch.load(tmp_path / "resumed" / "4.pt", weights_only=True)
     assert saved["format_version"] == training.CHECKPOINT_FORMAT_VERSION
     assert saved["tokens_seen"] == 32
@@ -126,3 +133,43 @@ def test_cadence_final_checkpoint_and_no_overwrite(tmp_path):
     assert (tmp_path / "run" / "4.pt").is_file()
     with pytest.raises(FileExistsError):
         training.training_loop(data, model_config, train_config, tmp_path / "run", verbose=False, checkpoint_every=2)
+
+
+@pytest.mark.parametrize("log_every", [1, 3])
+def test_throughput_excludes_nontraining_work(tmp_path, monkeypatch, log_every):
+    # Each training update takes one fake second. Add large fake delays to
+    # validation, checkpointing, and logging; none should affect training rates.
+    clock = [0.0]
+    def now():
+        clock[0] += 1.0
+        return clock[0]
+    monkeypatch.setattr(training.time, "perf_counter", now)
+    data = np.arange(64) % 16
+    validation = data.copy()
+    original_batch, original_save = training.get_batch, training.save_checkpoint
+    def batch(source, *args):
+        if source is validation:
+            clock[0] += 1000
+        return original_batch(source, *args)
+    def save(*args, **kwargs):
+        clock[0] += 1000
+        return original_save(*args, **kwargs)
+    monkeypatch.setattr(training, "get_batch", batch)
+    monkeypatch.setattr(training, "save_checkpoint", save)
+    records = []
+    def log(record):
+        clock[0] += 1000
+        records.append(record)
+    model_config, train_config = configs()
+    result = training.training_loop(
+        data, model_config, train_config, tmp_path / "run", verbose=False,
+        validation_data=validation, eval_every=2, eval_batches=1,
+        checkpoint_every=1, log_every=log_every, log_metrics=log,
+    )
+    params = sum(p.numel() for p in result["model"].parameters())
+    for record in records:
+        if record["step"] == 1:
+            assert "estimated_train_tflops" not in record
+        else:
+            assert record["train_tokens_per_second"] == 8
+            assert record["estimated_train_tflops"] == pytest.approx(6 * params * 8 / 1e12)

@@ -17,6 +17,9 @@ from tests.conftest import vocab_size
 import hashlib
 import uuid
 from cs336_basics.run_io import atomic_save, capture_rng, restore_rng, resume_settings
+from cs336_basics.metrics import format_metrics
+import sys
+import textwrap
 import pprint
 import random
 import time
@@ -139,7 +142,7 @@ def get_batch(x, batch_size, context_length, device=torch.device('cpu')):
 
     inds = torch.tensor(random.choices(range(xsize - context_length), k=batch_size))
 
-    idx = torch.tensor(inds).view(-1, 1)  # Reshape to column vector: [[2], [7], [4]]
+    idx = inds.view(-1, 1)  # Reshape to column vector: [[2], [7], [4]]
 
     # 3. Create the 2D index matrix using broadcasting
     # This adds j offsets (0, 1, 2) to each element in idx
@@ -202,6 +205,7 @@ def training_loop(
     resume_from=None, stop_after=None, resolved_config=None,
     validation_data=None, eval_every=100, eval_batches=2, keep_last=None,
     log_metrics: Callable[[dict], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ):
     """Train, evaluate, save snapshots, and emit dictionaries to log_metrics.
 
@@ -251,6 +255,10 @@ def training_loop(
     model_args = dict(model_params)
     model_args["theta"] = model_args.pop("rope_theta", 10000.0)
     model = transformer.Transformer(**model_args).to(device)
+    # Rough forward+backward estimate: 6N FLOPs per training token, with N the
+    # total parameter count. Not a hardware measurement; omits attention-matrix
+    # costs and excludes validation/sampling. Compute N only once per launch.
+    flops_per_token = 6 * sum(parameter.numel() for parameter in model.parameters())
     opt = AdamW(
         model.parameters(), lr=learning_rate_at(training_params, 0),
         betas=tuple(training_params.get("betas", (0.9, 0.999))),
@@ -288,10 +296,18 @@ def training_loop(
     if output is not None:
         output.mkdir(parents=True, exist_ok=log_metrics is not None)
     started = time.perf_counter()
+    interval_seconds = 0.0
+    interval_tokens = 0
     last_metric = None
     saved_paths = []  # Retention applies only to checkpoints from this execution.
     model.train()
     for step in range(start_step + 1, end_step + 1):
+        # Drain earlier accelerator work before timing this training update.
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elif device.type == "mps":
+            torch.mps.synchronize()
+        step_started = time.perf_counter()
         inputs, targets = get_batch(x, training_params["batch_size"], model_params["context_length"], device)
         opt.zero_grad()
         loss = nn_utils.cross_entropy(model(inputs), targets)
@@ -312,14 +328,28 @@ def training_loop(
             torch.cuda.synchronize(device)
         elif device.type == "mps":
             torch.mps.synchronize()
+        step_seconds = time.perf_counter() - step_started
+        # Skip the first update of each launch (including resumes) as warmup.
+        # Sum training time only: batching, forward/backward, and optimizer work.
+        # Validation, sampling, checkpointing, and logging are outside this timer.
+        if step > start_step + 1:
+            interval_seconds += step_seconds
+            interval_tokens += training_params["batch_size"] * model_params["context_length"]
         elapsed = elapsed_before + time.perf_counter() - started
         last_metric = {
             "run_id": run_id, "step": step,
             "tokens_seen": tokens_seen, "train_loss": loss.item(), "learning_rate": lr,
+            # tokens_seen is restored on resume, so cumulative compute continues.
+            "estimated_train_flops": flops_per_token * tokens_seen,
             "grad_norm": before_clip, "clipped_grad_norm": after_clip,
             "elapsed_seconds": elapsed,
         }
-        evaluate = validation_data is not None and (step % eval_every == 0 or step == end_step)
+        # Poll only after a complete optimizer update, never save partial updates.
+        # A request arriving during evaluation/logging is handled at the next
+        # update boundary. Freeze this decision so evaluation and saving agree.
+        stopping = should_stop is not None and should_stop()
+        final_step = step == end_step or stopping
+        evaluate = validation_data is not None and (step % eval_every == 0 or final_step)
         if evaluate:
             # Use repeatable validation batches, without advancing the
             # Python/PyTorch generators that determine future training.
@@ -342,13 +372,20 @@ def training_loop(
             # Include evaluation time in this record and saved elapsed time.
             elapsed = elapsed_before + time.perf_counter() - started
             last_metric["elapsed_seconds"] = elapsed
-        if step % log_every == 0 or step == end_step or evaluate:
+        if step % log_every == 0 or final_step or evaluate:
+            if interval_seconds > 0:
+                # Interval averages, not cumulative rates. Same approximate 6N
+                # FLOPs/token as estimated_train_flops; TFLOP/s divides by 1e12.
+                last_metric["train_tokens_per_second"] = interval_tokens / interval_seconds
+                last_metric["estimated_train_tflops"] = flops_per_token * interval_tokens / interval_seconds / 1e12
             if log_metrics is not None:
                 log_metrics(last_metric)
             elif verbose:
-                print(last_metric)
+                print(format_metrics(last_metric, training_params["steps"]), file=sys.stderr, flush=True)
+            interval_seconds = 0.0
+            interval_tokens = 0
 
-        if step % checkpoint_every == 0 or step == end_step:
+        if step % checkpoint_every == 0 or final_step:
             if output is not None:
                 # History lives in JSONL; only continuation state goes here.
                 destination = output / f"{step}.pt"
@@ -368,7 +405,7 @@ def training_loop(
                         expired = saved_paths[0]
                         expired.unlink()
                         saved_paths.pop(0)
-            if tok is not None:
+            if tok is not None and not stopping:
                 # Sampling must not change subsequent training randomness.
                 rng = capture_rng(device)
                 model.eval()
@@ -377,10 +414,14 @@ def training_loop(
                         sample = tok.decode(decode.decode(
                             model, tok, prompt or "My good friend Agustin said:", 20, temperature=0.3))
                     if verbose:
-                        print(f"Sample: {sample}")
+                        print(f"\n  Sample (step {step:,}):\n" + textwrap.fill(
+                            sample, width=100, initial_indent="    ", subsequent_indent="    "
+                        ) + "\n", file=sys.stderr, flush=True)
                 finally:
                     model.train()
                     restore_rng(rng)
+        if stopping:
+            break
     return {"model": model, "optimizer": opt, "last_metric": last_metric, "run_id": run_id}
 
 

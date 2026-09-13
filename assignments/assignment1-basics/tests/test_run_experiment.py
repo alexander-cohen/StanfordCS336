@@ -1,5 +1,7 @@
 import copy
 import json
+import pickle
+import signal
 import subprocess
 import sys
 
@@ -13,6 +15,12 @@ from tests.test_experiment_config import make_project
 
 def setup_experiment(tmp_path):
     data, runs, preset = make_project(tmp_path)
+    # A small real tokenizer whose IDs match this test model. All prompt bytes
+    # are printable ASCII, so this vocabulary is sufficient for sample generation.
+    vocab = {i: bytes([i + 32]) for i in range(99)}
+    vocab[99] = b"<|endoftext|>"
+    (tmp_path / "tokenizers/vocab.pkl").write_bytes(pickle.dumps(vocab))
+    (tmp_path / "tokenizers/merges.pkl").write_bytes(pickle.dumps([]))
     # Use actual NPY files here: resolver unit tests only need file existence,
     # but an end-to-end training test must exercise real array loading.
     np.save(data / "tiny/train.npy", np.arange(100, dtype=np.int32) % 100)
@@ -32,6 +40,13 @@ def test_run_and_resume_with_validation(tmp_path):
         resolved, resume_from=first["output_dir"] / "2.pt", verbose=False)
     assert resolved == original
     saved_config = json.loads((full["output_dir"] / "config.resolved.json").read_text())
+    # Git evidence is collected at launch, not during preset resolution. This
+    # temporary fixture is outside Git, so unavailable metadata must be explicit.
+    code = {key: saved_config["provenance"].pop(key) for key in ("git_commit", "git_dirty", "git_error")}
+    assert code["git_commit"] is None and code["git_dirty"] is None
+    assert code["git_error"]
+    summary = json.loads((full["output_dir"] / "summary.json").read_text())
+    assert all(summary[key] == value for key, value in code.items())
     assert saved_config == resolved
     assert resumed["run_id"] == first["run_id"]
     assert len({r["output_dir"] for r in (full, first, resumed)}) == 3
@@ -79,9 +94,19 @@ def test_retention_and_console_validation(tmp_path, capsys):
     result = run_experiment(resolved)
     output = result["output_dir"]
     assert sorted(path.name for path in output.glob("*.pt")) == ["3.pt", "4.pt"]
-    assert "validation_loss=" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert "| val " in captured.err
+    assert "Sample (step " in captured.err
     assert not (output / "events.jsonl").exists()
     assert (output / "summary.json").exists()
+
+
+def test_tokenizer_vocabulary_must_match_model(tmp_path):
+    resolved, _, _, runs = setup_experiment(tmp_path)
+    resolved["model"]["vocab_size"] += 1
+    with pytest.raises(ExperimentConfigError, match="Tokenizer vocabulary"):
+        run_experiment(resolved, verbose=False)
+    assert not runs.exists()
 
 
 def test_summary_failure_never_reports_complete(tmp_path, monkeypatch):
@@ -105,6 +130,7 @@ def test_cli_dry_run_and_training(tmp_path):
     _, preset, data, runs = setup_experiment(tmp_path)
     # CLI tokenizers are relative to the real project; use its existing files.
     text = preset.read_text().replace("tokenizers/vocab.pkl", "tokenizers/ts_train_10000_vocab.pkl")
+    text = text.replace("vocab_size = 100\n", "vocab_size = 10000\n")
     preset.write_text(text.replace("tokenizers/merges.pkl", "tokenizers/ts_train_10000_merges.pkl"))
     command = [sys.executable, "-m", "scripts.run_experiment", "--config", str(preset),
                "--data-root", str(data), "--runs-root", str(runs)]
@@ -115,3 +141,51 @@ def test_cli_dry_run_and_training(tmp_path):
     attempts = list(runs.iterdir())
     assert len(attempts) == 1
     assert (attempts[0] / "4.pt").exists()
+
+
+def test_ctrl_c_saves_safe_step_and_resumes_exactly(tmp_path, monkeypatch):
+    from cs336_basics import training
+
+    resolved, _, _, _ = setup_experiment(tmp_path)
+    for section in ("evaluation", "logging", "checkpoint"):
+        resolved[section]["every_steps"] = 3
+    full = run_experiment(resolved, verbose=False)
+    original_step = training.AdamW.step
+    count = 0
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    def step(self, *args, **kwargs):
+        nonlocal count
+        count += 1
+        # Request interruption before update 2 finishes: the handler must return
+        # so the optimizer completes before any checkpoint can be written.
+        if count == 2:
+            signal.raise_signal(signal.SIGINT)
+        return original_step(self, *args, **kwargs)
+
+    monkeypatch.setattr(training.AdamW, "step", step)
+    stopped = run_experiment(resolved, verbose=False)
+    assert signal.getsignal(signal.SIGINT) == previous_handler
+    output = stopped["output_dir"]
+    assert stopped["last_metric"]["step"] == 2
+    assert "validation_loss" in stopped["last_metric"]
+    assert (output / "2.pt").exists()
+    assert not (output / "3.pt").exists()
+    assert json.loads((output / "summary.json").read_text())["status"] == "paused"
+    assert json.loads((output / "metrics.jsonl").read_text())["step"] == 2
+    resumed = run_experiment(resolved, resume_from=output / "2.pt", verbose=False)
+    for key, value in full["model"].state_dict().items():
+        torch.testing.assert_close(value, resumed["model"].state_dict()[key], rtol=0, atol=0)
+
+
+def test_second_ctrl_c_interrupts_and_restores_handler():
+    from cs336_basics.experiment import _graceful_stop
+
+    previous_handler = signal.getsignal(signal.SIGINT)
+    with pytest.raises(KeyboardInterrupt):
+        with _graceful_stop() as should_stop:
+            assert not should_stop()
+            signal.raise_signal(signal.SIGINT)
+            assert should_stop()
+            signal.raise_signal(signal.SIGINT)
+    assert signal.getsignal(signal.SIGINT) == previous_handler

@@ -19,7 +19,8 @@ def decode(model: transformer.Transformer,
 		context_unpadded = generated[-model.context_length:]
 		pad_add = model.context_length - len(context_unpadded)
 		context = [space] * pad_add + context_unpadded
-		logits = model(torch.tensor(context))[-1:]
+		# Sampling inputs must be on the same device as the trained model.
+		logits = model(torch.tensor(context, device=next(model.parameters()).device))[-1:]
 
 		if temperature is not None:
 			probs = nn_utils.softmax(logits / temperature, -1)
@@ -42,4 +43,3 @@ def decode(model: transformer.Transformer,
 			break
 
 	return generated
-

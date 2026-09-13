@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from cs336_basics.metrics import metric_logger
+from cs336_basics.metrics import metric_logger, format_metrics
 from cs336_basics.experiment import run_experiment
 from tests.test_run_experiment import setup_experiment
 
@@ -79,3 +79,23 @@ def test_disabled_tracking_only_writes_local_metrics(tmp_path, monkeypatch, caps
     assert json.loads((output / "metrics.jsonl").read_text()) == record
     captured = capsys.readouterr()
     assert not captured.out and not captured.err
+
+
+def test_console_format_preserves_stored_precision(tmp_path, capsys):
+    resolved, _, _, _ = setup_experiment(tmp_path)
+    output = tmp_path / "console"
+    output.mkdir()
+    record = {
+        "step": 2, "train_loss": 3.123456789, "validation_loss": 3.23456789,
+        "learning_rate": 0.001, "elapsed_seconds": 3661.9,
+        "train_tokens_per_second": 12345.6, "estimated_train_tflops": 0.012345,
+    }
+    with metric_logger(output, resolved) as log:
+        log(record)
+    terminal = capsys.readouterr().err
+    assert "2/4" in terminal and "3.1235" in terminal
+    assert "12,346" in terminal and "01:01:01" in terminal
+    assert "0.0123" in terminal
+    assert json.loads((output / "metrics.jsonl").read_text()) == record
+    # Missing validation or warmup throughput must not look like measured zero.
+    assert "—" in format_metrics({"step": 1, "train_loss": 4.0})

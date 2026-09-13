@@ -8,7 +8,7 @@ disk. Weights & Biases is an optional view of the same configuration and metrics
 1. Never put large datasets, checkpoints, or generated run directories in Git.
 2. Never overwrite a completed run directory.
 3. Save the fully resolved configuration before the first optimizer update.
-4. Record the Git commit and any uncommitted changes in your experiment note (not automated).
+4. Git commit/dirty status are recorded automatically; commit relevant code before important runs.
 5. Append metrics as they are produced so an interrupted run retains its history.
 6. Keep training and validation inputs explicit and distinct.
 7. A checkpoint is valid only if resuming it has been tested against an uninterrupted run.
@@ -91,6 +91,13 @@ There is no separate event log, attempt ID, or redundant configuration hash.
 
 ## Where the code lives
 
+At launch, `git_commit`, `git_dirty`, and `git_error` are saved in resolved-config provenance,
+the local summary, and W&B config. Git failures/timeouts produce unknown values and a warning,
+not a false clean status. Dirty runs also save local `code.diff` (staged and unstaged tracked
+changes, including binary patches) and `untracked_files.json` (names only). Neither is uploaded
+to W&B. Untracked contents are not preserved, so this is not a complete source snapshot.
+Ignored data/run files do not make Git dirty. These checks run once, with five-second timeouts.
+
 - `experiment.py`: resolve configuration, load data, seed generators, open logging, and save the summary.
 - `training.py`: train, evaluate, save checkpoints, and emit metric dictionaries via `log_metrics`.
 - `metrics.py`: write each dictionary to JSONL and optionally the terminal and W&B; close outputs on exit.
@@ -117,7 +124,14 @@ Tracking errors propagate, but already-flushed JSONL records and checkpoints rem
 Forwarding, grouping, and cleanup are tested with a fake service. Real SDK verification is opt-in:
 `RUN_WANDB_INTEGRATION=1 uv run pytest tests/test_metrics.py -q`.
 The local SDK import stalled during verification; real offline execution and online uploads remain unverified.
-Throughput/TFLOP estimates are not implemented yet.
+`estimated_train_flops` logs cumulative approximate training compute: 6 times total model parameters times
+training tokens seen, including before a resume. Select it as the x-axis for `validation_loss` in W&B.
+This excludes validation/sampling and omits attention-matrix costs; it is not a hardware measurement.
+`train_tokens_per_second` and `estimated_train_tflops` average training throughput since the last logged
+record. Timing includes batching and optimizer work but excludes evaluation, sampling, checkpointing,
+and logging. Accelerators synchronize at the timing boundaries. The first update of each launch is
+excluded as warmup; a record with no timed updates omits these rates. TFLOP/s uses the same approximate
+6N FLOPs/token estimate, divided by 1e12. Short smoke runs are not reliable hardware benchmarks.
 
 ## Research notes
 
@@ -152,11 +166,19 @@ are untouched. Deleted checkpoints are not recoverable from this workflow; retai
 CPU interruption equivalence is tested; accelerator equivalence has not yet been verified.
 The CLI supports execution and dry runs. Launch with `uv run python -m scripts.run_experiment --config configs/smoke.toml`.
 Use `--stop-after 2` to pause at step 2 and `--resume-from /absolute/path/to/2.pt` to continue in a fresh attempt.
+During training, the first Ctrl+C requests a graceful pause: finish the next optimizer update, evaluate,
+log metrics, save a checkpoint, skip text sampling, close W&B, and write a paused summary. The original
+training budget stays unchanged for resume. A request during evaluation/logging is checked after the
+next update. A second Ctrl+C raises KeyboardInterrupt immediately (normal cleanup still runs), so it
+does not guarantee a new checkpoint or summary. The previous signal handler is restored afterward.
+This behavior applies to main-thread `run_experiment` calls; setup before training uses normal Ctrl+C.
 `run_experiment` seeds generators, validates and memory-maps integer NPY token arrays, and writes a final summary.
 Validation uses repeatable batches without advancing training RNG state. Final-step metrics include validation.
 Data checking and hashing read the datasets in bounded chunks before training, even for short smoke runs.
-Tokenizer files are checked for existence but are not loaded: training consumes pretokenized IDs and does not
-generate samples through this launcher. Their compatibility with the arrays must be established during preprocessing.
+The launcher loads the trusted tokenizer pickle files and checks vocabulary IDs against the model.
+Training still consumes pretokenized IDs; the tokenizer produces 20-token samples at checkpoint steps,
+printed when verbose is enabled. Sampling preserves training RNG state. Vocabulary size checks do not
+prove the datasets used the same tokenizer; that compatibility must be established during preprocessing.
 Summary JSON is published atomically; summary failures leave saved checkpoints available without a success summary.
 Absolute paths, TOML comments, logging cadence, and provenance are excluded from resume compatibility comparisons.
 
