@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from cs336_basics.training import training_loop
+from cs336_basics.metrics import metric_logger
+from cs336_basics.run_io import atomic_json
 
 
 SUPPORTED_SCHEMA_VERSION = 1
@@ -337,8 +339,6 @@ def run_experiment(resolved, *, resume_from=None, stop_after=None, verbose=True)
     if device == "mps" and not torch.backends.mps.is_available():
         raise ExperimentConfigError("MPS was requested but is unavailable")
     resolved["runtime"]["device"] = device
-    if resolved["tracking"]["wandb_mode"] != "disabled":
-        raise ExperimentConfigError("W&B is not connected yet; use wandb_mode = 'disabled'")
 
     model_config = resolved["model"]
     training_config = resolved["training"]
@@ -366,19 +366,29 @@ def run_experiment(resolved, *, resume_from=None, stop_after=None, verbose=True)
     if device == "mps":
         torch.mps.manual_seed(seed)
 
-    # The loop creates this directory exclusively. Each invocation, including a
+    # The launcher creates this directory exclusively. Each invocation, including a
     # resume, gets a fresh attempt path; the checkpoint preserves logical run ID.
     name = re.sub(r"[^A-Za-z0-9_-]+", "-", resolved["experiment"]["name"]).strip("-") or "experiment"
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = Path(paths["runs_root"]) / f"{timestamp}_{name}_{uuid.uuid4().hex[:12]}"
-    result = training_loop(
-        arrays['train_data'], model_config, training_config, checkpoint_out=output,
-        device=device, checkpoint_every=resolved["checkpoint"]["every_steps"],
-        keep_last=resolved["checkpoint"]["keep_last"],
-        log_every=resolved["logging"]["every_steps"], resolved_config=resolved,
-        validation_data=arrays['validation_data'], eval_every=resolved["evaluation"]["every_steps"],
-        eval_batches=resolved["evaluation"]["batches"],
-        resume_from=resume_from, stop_after=stop_after, verbose=verbose,
-    )
+    output.mkdir(parents=True, exist_ok=False)
+    atomic_json(resolved, output / "config.resolved.json")
+    # The loop emits dictionaries; it knows nothing about files or W&B logging.
+    with metric_logger(output, resolved, verbose=verbose) as log_metrics:
+        result = training_loop(
+            arrays['train_data'], model_config, training_config, checkpoint_out=output,
+            device=device, checkpoint_every=resolved["checkpoint"]["every_steps"],
+            keep_last=resolved["checkpoint"]["keep_last"],
+            log_every=resolved["logging"]["every_steps"], resolved_config=resolved,
+            validation_data=arrays['validation_data'], eval_every=resolved["evaluation"]["every_steps"],
+            eval_batches=resolved["evaluation"]["batches"],
+            resume_from=resume_from, stop_after=stop_after, verbose=verbose,
+            log_metrics=log_metrics,
+        )
+    # A missing summary means this execution did not finish successfully.
+    atomic_json({
+        "run_id": result["run_id"], "last_metric": result["last_metric"],
+        "status": "complete" if result["last_metric"]["step"] == training_config["steps"] else "paused",
+    }, output / "summary.json")
     result["output_dir"] = output
     return result

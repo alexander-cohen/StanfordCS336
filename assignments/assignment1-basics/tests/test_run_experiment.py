@@ -80,25 +80,24 @@ def test_retention_and_console_validation(tmp_path, capsys):
     output = result["output_dir"]
     assert sorted(path.name for path in output.glob("*.pt")) == ["3.pt", "4.pt"]
     assert "validation_loss=" in capsys.readouterr().err
-    events = [json.loads(line) for line in (output / "events.jsonl").read_text().splitlines()]
-    assert len([event for event in events if event["event"] == "checkpoint_deleted"]) == 2
-    assert events[-1]["event"] == "complete"
+    assert not (output / "events.jsonl").exists()
     assert (output / "summary.json").exists()
 
 
 def test_summary_failure_never_reports_complete(tmp_path, monkeypatch):
-    from cs336_basics import training
+    from cs336_basics import experiment
 
     resolved, _, _, runs = setup_experiment(tmp_path)
-    def fail(*args):
-        raise OSError("summary failed")
-    monkeypatch.setattr(training, "atomic_json", fail)
+    original = experiment.atomic_json
+    def fail(payload, path):
+        if path.name == "summary.json":
+            raise OSError("summary failed")
+        original(payload, path)
+    monkeypatch.setattr(experiment, "atomic_json", fail)
     with pytest.raises(OSError, match="summary failed"):
         run_experiment(resolved, verbose=False)
     output, = runs.iterdir()
-    events = [json.loads(line) for line in (output / "events.jsonl").read_text().splitlines()]
-    assert events[-1]["event"] == "error"
-    assert not any(event["event"] == "complete" for event in events)
+    assert not (output / "summary.json").exists()
     assert (output / "4.pt").exists()
 
 

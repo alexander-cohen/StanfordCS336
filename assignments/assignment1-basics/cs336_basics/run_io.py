@@ -82,6 +82,6 @@ def restore_rng(state):
         torch.mps.set_rng_state(state["mps"].cpu())
 
 
-def write_event(stream, event):
-    stream.write(json.dumps(event, allow_nan=False) + "\n")
+def write_jsonl(stream, record):
+    stream.write(json.dumps(record, allow_nan=False) + "\n")
     stream.flush()

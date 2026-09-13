@@ -1,5 +1,4 @@
 import io
-import json
 import random
 
 import numpy as np
@@ -27,7 +26,9 @@ def test_resume_matches_uninterrupted(tmp_path, capsys):
     model_config, train_config = configs()
     data = np.arange(64) % 16
     seed()
-    full = training.training_loop(data, model_config, train_config, tmp_path / "full", verbose=False, checkpoint_every=2)
+    original, continued = [], []
+    full = training.training_loop(data, model_config, train_config, tmp_path / "full", verbose=False,
+                                  checkpoint_every=2, log_metrics=original.append)
     seed()
     first = training.training_loop(
         data, model_config, train_config, tmp_path / "first", verbose=False, checkpoint_every=2, stop_after=2)
@@ -37,22 +38,32 @@ def test_resume_matches_uninterrupted(tmp_path, capsys):
     torch.rand(3)
     resumed = training.training_loop(
         data, model_config, train_config, tmp_path / "resumed", verbose=False, checkpoint_every=2,
-        resume_from=tmp_path / "first" / "2.pt")
+        resume_from=tmp_path / "first" / "2.pt", log_metrics=continued.append)
     assert resumed["run_id"] == first["run_id"]
     for key, tensor in full["model"].state_dict().items():
         torch.testing.assert_close(tensor, resumed["model"].state_dict()[key], rtol=0, atol=0)
     from tests.test_serialization import are_optimizers_equal
     assert are_optimizers_equal(full["optimizer"].state_dict(), resumed["optimizer"].state_dict(), 0, 0)
-    def records(path):
-        return [json.loads(line) for line in path.read_text().splitlines()]
-    original = records(tmp_path / "full" / "metrics.jsonl")
-    continued = records(tmp_path / "resumed" / "metrics.jsonl")
     assert [r["step"] for r in continued] == [3, 4]
     assert [r["train_loss"] for r in original[2:]] == [r["train_loss"] for r in continued]
     saved = torch.load(tmp_path / "resumed" / "4.pt", weights_only=True)
+    assert saved["format_version"] == training.CHECKPOINT_FORMAT_VERSION
     assert saved["tokens_seen"] == 32
     assert "cross_entropy" not in saved
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("version", [None, training.CHECKPOINT_FORMAT_VERSION + 1])
+def test_resume_rejects_unsupported_format(tmp_path, version):
+    checkpoint = {} if version is None else {"format_version": version}
+    path = tmp_path / "unsupported.pt"
+    torch.save(checkpoint, path)
+    model_config, train_config = configs()
+    with pytest.raises(ValueError, match=f"version: {version!r}; expected {training.CHECKPOINT_FORMAT_VERSION}"):
+        training.training_loop(
+            np.arange(64) % 16, model_config, train_config, verbose=False,
+            resume_from=path,
+        )
 
 
 def test_atomic_failure_preserves_previous_checkpoint(tmp_path, monkeypatch):
@@ -102,15 +113,15 @@ def test_failed_checkpoint_is_not_reported_as_saved(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="disk failure"):
         training.training_loop(np.arange(64) % 16, model_config, train_config,
                                tmp_path / "run", verbose=False, checkpoint_every=2)
-    events = [json.loads(line) for line in (tmp_path / "run" / "events.jsonl").read_text().splitlines()]
-    assert [event["event"] for event in events] == ["start", "error"]
+    assert not list((tmp_path / "run").glob("*.pt"))
 
 
 def test_cadence_final_checkpoint_and_no_overwrite(tmp_path):
     model_config, train_config = configs()
     data = np.arange(64) % 16
-    training.training_loop(data, model_config, train_config, tmp_path / "run", verbose=False, checkpoint_every=2, log_every=3)
-    records = [json.loads(line) for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
+    records = []
+    training.training_loop(data, model_config, train_config, tmp_path / "run", verbose=False,
+                           checkpoint_every=2, log_every=3, log_metrics=records.append)
     assert [record["step"] for record in records] == [3, 4]
     assert (tmp_path / "run" / "4.pt").is_file()
     with pytest.raises(FileExistsError):

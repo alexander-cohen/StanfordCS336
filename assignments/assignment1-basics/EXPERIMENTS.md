@@ -8,11 +8,11 @@ disk. Weights & Biases is an optional view of the same configuration and metrics
 1. Never put large datasets, checkpoints, or generated run directories in Git.
 2. Never overwrite a completed run directory.
 3. Save the fully resolved configuration before the first optimizer update.
-4. Record code identity and dirty state for every run.
+4. Record the Git commit and any uncommitted changes in your experiment note (not automated).
 5. Append metrics as they are produced so an interrupted run retains its history.
 6. Keep training and validation inputs explicit and distinct.
 7. A checkpoint is valid only if resuming it has been tested against an uninterrupted run.
-8. Use the same run ID in the local directory, research note, and W&B run.
+8. Link research notes to the output directory; a logical run ID groups resumed executions.
 
 ## Machine-specific roots
 
@@ -70,33 +70,54 @@ Counts include repeated training positions and exclude validation tokens. Schedu
 Resolved output is not an input preset: it preserves requested tokens alongside the derived steps.
 Distributed training and gradient accumulation will require extending this calculation when supported.
 
-Each launch creates a unique run ID such as `20260911T160800Z_tinystories-smoke_a1b2c3`. The corresponding directory
+Each launch creates a unique directory such as `20260911T160800Z_tinystories-smoke_a1b2c3`. The directory
 under `CS336_RUNS_ROOT` is the unit of experimental evidence:
 
 ```text
 20260911T160800Z_tinystories-smoke_a1b2c3/
-├── checkpoints/
-├── command.txt
-├── config.input.toml
+├── 2.pt
+├── 4.pt
 ├── config.resolved.json
-├── environment.json
-├── events.jsonl
-├── git.diff
-├── git_status.txt
 ├── metrics.jsonl
-├── source_manifest.json
 └── summary.json
 ```
 
 - `metrics.jsonl` contains machine-readable numerical observations keyed by step and tokens seen.
-- `events.jsonl` contains lifecycle events such as start, checkpoint, resume, exception, and completion.
-- `summary.json` is written at completion and contains final/best metrics and artifact references.
-- `source_manifest.json` hashes the source files that define the run.
-- `git.diff` and `git_status.txt` preserve uncommitted code identity without pretending the tree was clean.
+- `summary.json` records final metrics and complete/paused status. It is absent if execution fails.
 - Checkpoints are written atomically and contain only recovery state plus compact metadata, not the full metric history.
 
-The exact checkpoint contract will include model state, optimizer state, completed step, token count, resolved-config
-hash, and Python, NumPy, and PyTorch random-number-generator states.
+Checkpoints include model/optimizer state, completed step, token count, settings, data hashes, and RNG states.
+There is no separate event log, attempt ID, or redundant configuration hash.
+
+## Where the code lives
+
+- `experiment.py`: resolve configuration, load data, seed generators, open logging, and save the summary.
+- `training.py`: train, evaluate, save checkpoints, and emit metric dictionaries via `log_metrics`.
+- `metrics.py`: write each dictionary to JSONL and optionally the terminal and W&B; close outputs on exit.
+- `run_io.py`: atomic writes and RNG recovery helpers.
+
+Terminal output is controlled by the Python `verbose` argument (default true), not TOML.
+Direct `training_loop` calls without a callback print metrics but do not create JSONL/config/summary files;
+use `run_experiment` for the complete workflow.
+
+## W&B charts
+
+Set `[tracking].wandb_mode` to `offline` for local W&B records or `online` for live charts.
+It defaults to `disabled`; JSONL logging is always enabled by the launcher.
+For online use, first run `uv run wandb login`, then launch the experiment normally.
+Do not put an API key in TOML or Git. Offline records can later be uploaded with
+`uv run wandb sync /path/to/output/wandb/offline-run-...`.
+
+Numeric metrics are plotted against optimizer step. Each execution has a distinct W&B run identified by its
+directory name; resumed executions share a group via the logical run ID, so restarting an older checkpoint
+does not overwrite newer history. W&B opens at the first logged step and closes on success or failure.
+Portable settings and numeric metrics are sent; this integration does not upload datasets/checkpoints or
+automatically capture source, Git metadata, or console output. W&B may collect system metadata.
+Tracking errors propagate, but already-flushed JSONL records and checkpoints remain on disk.
+Forwarding, grouping, and cleanup are tested with a fake service. Real SDK verification is opt-in:
+`RUN_WANDB_INTEGRATION=1 uv run pytest tests/test_metrics.py -q`.
+The local SDK import stalled during verification; real offline execution and online uploads remain unverified.
+Throughput/TFLOP estimates are not implemented yet.
 
 ## Research notes
 
@@ -114,19 +135,19 @@ may supply the two dictionaries directly; in that case a minimal configuration r
 Pass `device`, `checkpoint_every`, and `log_every` directly to `training_loop` from the runtime, checkpoint,
 and logging sections. The loop defaults to CPU and a checkpoint cadence of 100; `run_experiment` resolves
 `device = "auto"` to a concrete device before calling it.
-This field-name change also changes checkpoint configuration hashes: checkpoints from the earlier config layout
-cannot resume through the strict compatibility check without an explicit migration.
+Checkpoints with obsolete configuration field names cannot resume without an explicit migration.
+Existing format-1 checkpoints with the current settings layout still load; obsolete extra fields are ignored.
 
 The training loop now accepts keyword-only `log_every`, `resume_from`, `stop_after`, and
-`resolved_config` arguments. `checkpoint_out` must name a new attempt directory; it contains
-configuration, JSONL metrics/events, and periodic/final numbered checkpoints. A resumed attempt uses a
-new directory, retains the original run ID, and records the parent checkpoint in its resume event.
+`resolved_config` arguments. The launcher creates a fresh directory and passes a metrics callback;
+standalone calls create a fresh checkpoint directory. A resumed execution uses a
+new directory and retains the original run ID.
 Use `stop_after` to interrupt at an absolute step while keeping the full training budget unchanged.
 Resumption checks model/training/device settings and hashes of the actual training and validation tokens, then restores optimizer
 and RNG state. Hashing reads the dataset once per invocation in bounded chunks.
 Each checkpoint excludes accumulated metric histories. JSONL records are flushed after each write;
 checkpoint files are flushed, fsynced, and replaced atomically. `keep_last` retains the newest checkpoints in the
-current attempt only, removing older ones after a successful save and recording deletion events. Parent attempts
+current execution only, removing older ones after a successful save. Parent executions
 are untouched. Deleted checkpoints are not recoverable from this workflow; retain copies separately if needed.
 CPU interruption equivalence is tested; accelerator equivalence has not yet been verified.
 The CLI supports execution and dry runs. Launch with `uv run python -m scripts.run_experiment --config configs/smoke.toml`.
@@ -136,9 +157,7 @@ Validation uses repeatable batches without advancing training RNG state. Final-s
 Data checking and hashing read the datasets in bounded chunks before training, even for short smoke runs.
 Tokenizer files are checked for existence but are not loaded: training consumes pretokenized IDs and does not
 generate samples through this launcher. Their compatibility with the arrays must be established during preprocessing.
-The fuller run-directory contract describes the target workflow; source/environment manifests and W&B integration
-are not yet wired in. W&B modes other than disabled are rejected. Summary JSON is published atomically before
-complete/paused is recorded; summary failures produce an error event and leave saved checkpoints available.
+Summary JSON is published atomically; summary failures leave saved checkpoints available without a success summary.
 Absolute paths, TOML comments, logging cadence, and provenance are excluded from resume compatibility comparisons.
 
 Resolve the smoke preset without creating a run:

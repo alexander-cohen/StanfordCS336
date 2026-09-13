@@ -14,17 +14,17 @@ import numpy as np
 import cs336_basics.transformer as transformer
 import cs336_basics.decode as decode
 from tests.conftest import vocab_size
-from contextlib import ExitStack
 import hashlib
-import json
-import logging
 import uuid
-from cs336_basics.run_io import atomic_save, atomic_json, capture_rng, restore_rng, write_event, resume_settings
+from cs336_basics.run_io import atomic_save, capture_rng, restore_rng, resume_settings
 import pprint
 import random
 import time
 from pathlib import Path
 import os
+
+# Bump this when the checkpoint structure changes incompatibly, not for new runs.
+CHECKPOINT_FORMAT_VERSION = 1
 
 
 def old_cross_entropy(pred_logits: Float[Tensor, "... vocab_size"], 
@@ -195,20 +195,21 @@ def grad_norm(parameters):
     return grad_norm
 
 
-## old version written by me was replaced by codex version for better logging
 def training_loop(
     x, model_params: dict, training_params: dict,
     checkpoint_out=None, verbose=True, tok=None, prompt="",
     *, device="cpu", checkpoint_every=100, log_every=1,
     resume_from=None, stop_after=None, resolved_config=None,
     validation_data=None, eval_every=100, eval_batches=2, keep_last=None,
+    log_metrics: Callable[[dict], None] | None = None,
 ):
-    """Train with scalar logs and resumable snapshots.
+    """Train, evaluate, save snapshots, and emit dictionaries to log_metrics.
 
     checkpoint_out is a NEW attempt directory. On resume, use a new directory
     so metrics after an older checkpoint never conflict with an existing history.
     stop_after is an absolute completed-step boundary for interruption tests;
     it does not change the planned budget or learning-rate schedule.
+    The launcher owns logging; direct calls without a callback print metrics only.
     """
     if log_every <= 0 or checkpoint_every <= 0 or training_params["steps"] <= 0:
         raise ValueError("Logging cadence, checkpoint cadence, and training steps must be positive")
@@ -232,9 +233,6 @@ def training_loop(
         "model": model_params, "training": training_params,
         "runtime": {"device": str(device)},
     }
-    config_json = json.dumps(configuration, sort_keys=True, default=str)
-    compatible_json = json.dumps(resume_settings(configuration), sort_keys=True, default=str)
-    config_hash = hashlib.sha256(compatible_json.encode()).hexdigest()
     # Include the actual token bytes: equal shapes alone do not identify a dataset.
     data_hash = hashlib.sha256()
     for offset in range(0, len(x), 1_000_000):
@@ -260,13 +258,18 @@ def training_loop(
         weight_decay=training_params.get("weight_decay", 0.0),
     )
     start_step, tokens_seen, elapsed_before = 0, 0, 0.0
+    # Identifies the logical experiment across launches: new for fresh training,
+    # but inherited from the checkpoint when continuing an existing run.
     run_id = uuid.uuid4().hex
     if resume_from is not None:
         saved = torch.load(resume_from, map_location="cpu", weights_only=True)
-        if saved.get("format_version") != 1:
-            raise ValueError("This checkpoint lacks the state needed for training resume")
-        # Compare explicit settings, including for older format-1 checkpoints
-        # whose hash also included machine paths and the raw preset file hash.
+        if saved.get("format_version") != CHECKPOINT_FORMAT_VERSION:
+            raise ValueError(
+                f"Unsupported checkpoint format version: {saved.get('format_version')!r}; "
+                f"expected {CHECKPOINT_FORMAT_VERSION} (None means the version is missing)"
+            )
+        # Compare settings directly: moving data or changing logging is harmless,
+        # but changing the model, optimizer, or dataset is not an exact resume.
         if resume_settings(saved["configuration"]) != resume_settings(configuration) or saved["data_identity"] != data_identity:
             raise ValueError("Resume configuration or training data differs from the checkpoint")
         start_step = saved["iteration"]
@@ -275,145 +278,109 @@ def training_loop(
         model.load_state_dict(saved["model"])
         opt.load_state_dict(saved["optimizer"])
         tokens_seen, elapsed_before = saved["tokens_seen"], saved["elapsed_seconds"]
-        run_id = saved["run_id"]
+        run_id = saved["run_id"]  # Link this continuation to the original run.
         # Model construction consumes randomness. Restore AFTER constructing/loading.
         restore_rng(saved["rng"])
 
-    attempt_id = uuid.uuid4().hex
-    logger = logging.getLogger(f"cs336.training.{attempt_id}")
-    logger.propagate = False
-    logger.setLevel(logging.INFO)
-    with ExitStack() as stack:
-        if verbose:
-            handler = logging.StreamHandler()
-            logger.addHandler(handler)
-            stack.callback(handler.close)
-            stack.callback(logger.removeHandler, handler)
-        metrics = events = None
-        output = None
-        if checkpoint_out is not None:
-            output = Path(checkpoint_out)
-            # Never silently overwrite an existing attempt or its evidence.
-            output.mkdir(parents=True, exist_ok=False)
-            (output / "config.resolved.json").write_text(config_json + "\n")
-            metrics = stack.enter_context((output / "metrics.jsonl").open("x"))
-            events = stack.enter_context((output / "events.jsonl").open("x"))
+    # The launcher owns the output directory when it supplies a metrics callback.
+    # Direct calls still create a fresh checkpoint directory, without log machinery.
+    output = Path(checkpoint_out) if checkpoint_out is not None else None
+    if output is not None:
+        output.mkdir(parents=True, exist_ok=log_metrics is not None)
+    started = time.perf_counter()
+    last_metric = None
+    saved_paths = []  # Retention applies only to checkpoints from this execution.
+    model.train()
+    for step in range(start_step + 1, end_step + 1):
+        inputs, targets = get_batch(x, training_params["batch_size"], model_params["context_length"], device)
+        opt.zero_grad()
+        loss = nn_utils.cross_entropy(model(inputs), targets)
+        if not torch.isfinite(loss).item():
+            raise FloatingPointError(f"Non-finite loss at step {step}")
+        loss.backward()
+        before_clip = grad_norm(model.parameters())
+        if not math.isfinite(before_clip):
+            raise FloatingPointError(f"Non-finite gradient norm at step {step}")
+        nn_utils.gradient_clipping(model.parameters(), training_params["grad_clip"])
+        after_clip = grad_norm(model.parameters())
+        lr = learning_rate_at(training_params, step)
+        opt.set_lr(lr)
+        opt.step()
+        tokens_seen += training_params["batch_size"] * model_params["context_length"]
+        # Accelerator work is asynchronous; synchronize for meaningful timings.
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+        elif device.type == "mps":
+            torch.mps.synchronize()
+        elapsed = elapsed_before + time.perf_counter() - started
+        last_metric = {
+            "run_id": run_id, "step": step,
+            "tokens_seen": tokens_seen, "train_loss": loss.item(), "learning_rate": lr,
+            "grad_norm": before_clip, "clipped_grad_norm": after_clip,
+            "elapsed_seconds": elapsed,
+        }
+        evaluate = validation_data is not None and (step % eval_every == 0 or step == end_step)
+        if evaluate:
+            # Use repeatable validation batches, without advancing the
+            # Python/PyTorch generators that determine future training.
+            rng = capture_rng(device)
+            model.eval()
+            try:
+                random.seed(0)
+                validation_loss = 0.0
+                with torch.no_grad():
+                    for _ in range(eval_batches):
+                        val_inputs, val_targets = get_batch(
+                            validation_data, training_params["batch_size"], model_params["context_length"], device)
+                        validation_loss += nn_utils.cross_entropy(model(val_inputs), val_targets).item()
+                last_metric["validation_loss"] = validation_loss / eval_batches
+                if not math.isfinite(last_metric["validation_loss"]):
+                    raise FloatingPointError(f"Non-finite validation loss at step {step}")
+            finally:
+                model.train()
+                restore_rng(rng)
+            # Include evaluation time in this record and saved elapsed time.
+            elapsed = elapsed_before + time.perf_counter() - started
+            last_metric["elapsed_seconds"] = elapsed
+        if step % log_every == 0 or step == end_step or evaluate:
+            if log_metrics is not None:
+                log_metrics(last_metric)
+            elif verbose:
+                print(last_metric)
 
-        def event(kind, **fields):
-            if events is not None:
-                write_event(events, {"event": kind, "run_id": run_id, "attempt_id": attempt_id, **fields})
-
-        event("resume" if resume_from is not None else "start", step=start_step,
-              checkpoint=str(resume_from) if resume_from is not None else None)
-        started = time.perf_counter()
-        last_metric = None
-        saved_paths = []  # Only checkpoints created by THIS invocation can expire.
-        try:
-            model.train()
-            for step in range(start_step + 1, end_step + 1):
-                inputs, targets = get_batch(x, training_params["batch_size"], model_params["context_length"], device)
-                opt.zero_grad()
-                loss = nn_utils.cross_entropy(model(inputs), targets)
-                if not torch.isfinite(loss).item():
-                    raise FloatingPointError(f"Non-finite loss at step {step}")
-                loss.backward()
-                before_clip = grad_norm(model.parameters())
-                if not math.isfinite(before_clip):
-                    raise FloatingPointError(f"Non-finite gradient norm at step {step}")
-                nn_utils.gradient_clipping(model.parameters(), training_params["grad_clip"])
-                after_clip = grad_norm(model.parameters())
-                lr = learning_rate_at(training_params, step)
-                opt.set_lr(lr)
-                opt.step()
-                tokens_seen += training_params["batch_size"] * model_params["context_length"]
-                # Accelerator work is asynchronous; synchronize for meaningful timings.
-                if device.type == "cuda":
-                    torch.cuda.synchronize(device)
-                elif device.type == "mps":
-                    torch.mps.synchronize()
-                elapsed = elapsed_before + time.perf_counter() - started
-                last_metric = {
-                    "run_id": run_id, "attempt_id": attempt_id, "step": step,
-                    "tokens_seen": tokens_seen, "train_loss": loss.item(), "learning_rate": lr,
-                    "grad_norm": before_clip, "clipped_grad_norm": after_clip,
-                    "elapsed_seconds": elapsed,
-                }
-                evaluate = validation_data is not None and (step % eval_every == 0 or step == end_step)
-                if evaluate:
-                    # Use repeatable validation batches, without advancing the
-                    # Python/PyTorch generators that determine future training.
-                    rng = capture_rng(device)
-                    model.eval()
-                    try:
-                        random.seed(0)
-                        validation_loss = 0.0
-                        with torch.no_grad():
-                            for _ in range(eval_batches):
-                                val_inputs, val_targets = get_batch(
-                                    validation_data, training_params["batch_size"], model_params["context_length"], device)
-                                validation_loss += nn_utils.cross_entropy(model(val_inputs), val_targets).item()
-                        last_metric["validation_loss"] = validation_loss / eval_batches
-                        if not math.isfinite(last_metric["validation_loss"]):
-                            raise FloatingPointError(f"Non-finite validation loss at step {step}")
-                    finally:
-                        model.train()
-                        restore_rng(rng)
-                    # Include evaluation time in this record and saved elapsed time.
-                    elapsed = elapsed_before + time.perf_counter() - started
-                    last_metric["elapsed_seconds"] = elapsed
-                if step % log_every == 0 or step == end_step or evaluate:
-                    if metrics is not None:
-                        write_event(metrics, last_metric)
-                    logger.info("step=%d tokens=%d loss=%.6f lr=%g", step, tokens_seen, loss.item(), lr)
-                    if evaluate:
-                        logger.info("step=%d validation_loss=%.6f", step, last_metric["validation_loss"])
-
-                if step % checkpoint_every == 0 or step == end_step:
-                    if output is not None:
-                        # History lives in JSONL; only continuation state goes here.
-                        destination = output / f"{step}.pt"
-                        save_checkpoint(model, opt, step, destination, other_dat={
-                            "format_version": 1, "run_id": run_id, "attempt_id": attempt_id,
-                            "tokens_seen": tokens_seen, "elapsed_seconds": elapsed,
-                            "config_hash": config_hash, "configuration": configuration,
-                            "data_identity": data_identity, "rng": capture_rng(device),
-                        })
-                        event("checkpoint", step=step, path=str(destination))
-                        logger.info("Saved checkpoint %s", destination)
-                        saved_paths.append(destination)
-                        # Delete old checkpoints only AFTER the replacement saves.
-                        # The parent checkpoint of a resumed attempt is untouched.
-                        if keep_last is not None:
-                            while len(saved_paths) > keep_last:
-                                expired = saved_paths[0]
-                                expired.unlink()
-                                saved_paths.pop(0)
-                                event("checkpoint_deleted", step=step, path=str(expired))
-                    if tok is not None:
-                        # Sampling must not change subsequent training randomness.
-                        rng = capture_rng(device)
-                        model.eval()
-                        try:
-                            with torch.no_grad():
-                                sample = tok.decode(decode.decode(
-                                    model, tok, prompt or "My good friend Agustin said:", 20, temperature=0.3))
-                            event("sample", step=step, text=sample)
-                            logger.info("Sample: %s", sample)
-                        finally:
-                            model.train()
-                            restore_rng(rng)
-            status = "complete" if end_step == training_params["steps"] else "paused"
+        if step % checkpoint_every == 0 or step == end_step:
             if output is not None:
-                atomic_json({
-                    "run_id": run_id, "attempt_id": attempt_id, "output_dir": str(output),
-                    "status": status, "last_metric": last_metric,
-                }, output / "summary.json")
-            # Summary publication is part of success, so a failure above is logged
-            # as an error rather than followed by a misleading completion event.
-            event(status, step=end_step)
-        except BaseException as error:
-            event("error", error_type=type(error).__name__, message=str(error))
-            raise
+                # History lives in JSONL; only continuation state goes here.
+                destination = output / f"{step}.pt"
+                if destination.exists():
+                    raise FileExistsError(f"Refusing to overwrite checkpoint: {destination}")
+                save_checkpoint(model, opt, step, destination, other_dat={
+                    "format_version": CHECKPOINT_FORMAT_VERSION, "run_id": run_id,
+                    "tokens_seen": tokens_seen, "elapsed_seconds": elapsed,
+                    "configuration": configuration,
+                    "data_identity": data_identity, "rng": capture_rng(device),
+                })
+                saved_paths.append(destination)
+                # Delete old checkpoints only AFTER the replacement saves.
+                # The parent checkpoint of a resumed attempt is untouched.
+                if keep_last is not None:
+                    while len(saved_paths) > keep_last:
+                        expired = saved_paths[0]
+                        expired.unlink()
+                        saved_paths.pop(0)
+            if tok is not None:
+                # Sampling must not change subsequent training randomness.
+                rng = capture_rng(device)
+                model.eval()
+                try:
+                    with torch.no_grad():
+                        sample = tok.decode(decode.decode(
+                            model, tok, prompt or "My good friend Agustin said:", 20, temperature=0.3))
+                    if verbose:
+                        print(f"Sample: {sample}")
+                finally:
+                    model.train()
+                    restore_rng(rng)
     return {"model": model, "optimizer": opt, "last_metric": last_metric, "run_id": run_id}
 
 
