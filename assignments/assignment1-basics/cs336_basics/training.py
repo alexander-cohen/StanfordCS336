@@ -1,6 +1,6 @@
 import math
 from typing import Dict
-from matplotlib.font_manager import weight_dict
+# from matplotlib.font_manager import weight_dict
 import torch
 from jaxtyping import Float, Int, Bool
 import einops
@@ -9,7 +9,7 @@ from cs336_basics import nn_utils
 from cs336_basics.nn_utils import softmax
 from collections.abc import Callable, Iterable
 from typing import Literal, Optional
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import numpy as np
 import cs336_basics.transformer as transformer
 import cs336_basics.decode as decode
@@ -17,7 +17,7 @@ from tests.conftest import vocab_size
 import hashlib
 import uuid
 from cs336_basics.run_io import atomic_save, capture_rng, restore_rng, resume_settings
-from cs336_basics.metrics import format_metrics
+from cs336_basics.metrics import format_metrics, memory_metrics
 import sys
 import textwrap
 import pprint
@@ -373,11 +373,12 @@ def training_loop(
             elapsed = elapsed_before + time.perf_counter() - started
             last_metric["elapsed_seconds"] = elapsed
         if step % log_every == 0 or final_step or evaluate:
+            last_metric.update(memory_metrics(device))
             if interval_seconds > 0:
                 # Interval averages, not cumulative rates. Same approximate 6N
-                # FLOPs/token as estimated_train_flops; TFLOP/s divides by 1e12.
+                # FLOPs/token as estimated_train_flops, expressed as FLOP/s.
                 last_metric["train_tokens_per_second"] = interval_tokens / interval_seconds
-                last_metric["estimated_train_tflops"] = flops_per_token * interval_tokens / interval_seconds / 1e12
+                last_metric["estimated_train_flops_per_second"] = flops_per_token * interval_tokens / interval_seconds
             if log_metrics is not None:
                 log_metrics(last_metric)
             elif verbose:

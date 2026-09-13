@@ -119,7 +119,8 @@ Numeric metrics are plotted against optimizer step. Each execution has a distinc
 directory name; resumed executions share a group via the logical run ID, so restarting an older checkpoint
 does not overwrite newer history. W&B opens at the first logged step and closes on success or failure.
 Portable settings and numeric metrics are sent; this integration does not upload datasets/checkpoints or
-automatically capture source, Git metadata, or console output. W&B may collect system metadata.
+automatically capture source or Git metadata. Console output is captured from the first logged step onward.
+W&B may collect system metadata.
 Tracking errors propagate, but already-flushed JSONL records and checkpoints remain on disk.
 Forwarding, grouping, and cleanup are tested with a fake service. Real SDK verification is opt-in:
 `RUN_WANDB_INTEGRATION=1 uv run pytest tests/test_metrics.py -q`.
@@ -127,11 +128,11 @@ The local SDK import stalled during verification; real offline execution and onl
 `estimated_train_flops` logs cumulative approximate training compute: 6 times total model parameters times
 training tokens seen, including before a resume. Select it as the x-axis for `validation_loss` in W&B.
 This excludes validation/sampling and omits attention-matrix costs; it is not a hardware measurement.
-`train_tokens_per_second` and `estimated_train_tflops` average training throughput since the last logged
+`train_tokens_per_second` and `estimated_train_flops_per_second` average training throughput since the last logged
 record. Timing includes batching and optimizer work but excludes evaluation, sampling, checkpointing,
 and logging. Accelerators synchronize at the timing boundaries. The first update of each launch is
-excluded as warmup; a record with no timed updates omits these rates. TFLOP/s uses the same approximate
-6N FLOPs/token estimate, divided by 1e12. Short smoke runs are not reliable hardware benchmarks.
+excluded as warmup; a record with no timed updates omits these rates. FLOP/s uses the same approximate
+6N FLOPs/token estimate. Short smoke runs are not reliable hardware benchmarks.
 
 ## Research notes
 
@@ -202,5 +203,59 @@ Debug runs prove mechanics, not scientific conclusions. They are tagged `smoke` 
 
 Cluster execution comes only after the local sequence passes. Git transports source, presets, and notes; `rsync`
 transports large datasets and selected run artifacts; Slurm executes jobs. Cluster job scripts set machine roots and
-resource requests without changing the scientific preset. Current Torch storage paths and available partitions must be
-verified again before those scripts are added.
+resource requests without changing the scientific preset. Check your Torch allocation and storage paths before
+submitting; see the submission instructions below.
+
+## Submit on NYU Torch
+
+From the cluster checkout's `assignments/assignment1-basics` directory, prepare the Linux environment
+and authenticate W&B once:
+
+```sh
+export UV_CACHE_DIR="$SCRATCH/uv-cache"
+uv sync --locked
+uv run wandb login
+my_slurm_accounts
+```
+
+Copy the tokenized train and validation arrays into `$SCRATCH/data/tinystories/`. Tokenizer artifacts
+are tracked in Git. The batch script defaults to `$SCRATCH/data` and `$SCRATCH/runs/cs336`;
+export `CS336_DATA_ROOT` and `CS336_RUNS_ROOT` before submission to override these paths.
+Use an account returned by `my_slurm_accounts` in place of `YOUR_SLURM_ACCOUNT` below.
+
+Start with a short GPU check, then submit the full cosine preset:
+
+```sh
+sbatch --account=YOUR_SLURM_ACCOUNT scripts/train.slurm --config configs/smoke.toml --stop-after 4
+sbatch --account=YOUR_SLURM_ACCOUNT scripts/train.slurm
+squeue -u "$USER"
+```
+
+The script requests one GPU, four CPUs, 32 GB RAM, and four hours. Override resources with
+`sbatch` options before the script path. Launcher options follow the script path. CUDA is required.
+Slurm combines stdout and stderr in `slurm-JOBID.out` in the submission directory; online W&B
+runs also capture metrics and console output. Submit from the assignment directory.
+The cluster environment must already be installed: the job uses `uv run --no-sync`.
+The time limit may interrupt training; retain checkpoints and use `--resume-from` to continue.
+
+## Memory monitoring
+
+Every logged step includes `memory_process_rss_bytes`. CUDA runs also record
+`memory_cuda_allocated_bytes`, `memory_cuda_reserved_bytes`,
+`memory_cuda_peak_allocated_bytes`, `memory_cuda_peak_reserved_bytes`,
+`memory_cuda_free_bytes`, and `memory_cuda_total_bytes`. Allocator retry and OOM counters
+(`memory_cuda_num_alloc_retries`, `memory_cuda_num_ooms`) are included when the allocator exposes them.
+Numeric values go to JSONL and W&B; console memory values use GiB. Sampling is outside the timed
+training interval. CUDA peaks/counters are process-wide since startup or an external stats reset;
+they include validation and sampling and are not reset by this logger.
+
+Allocated memory measures live PyTorch tensors; reserved memory also includes reusable allocator cache.
+Free/total memory is device-wide, including other processes and non-PyTorch allocations. A large reserved
+value alone does not imply an impending OOM. Low free memory together with a high tensor peak and
+increasing allocation retries suggests capacity pressure. These metrics do not diagnose memory-bandwidth
+bottlenecks; that requires profiling. Fatal OOMs can occur before another metric is written.
+
+On MPS, `memory_mps_allocated_bytes`, `memory_mps_driver_bytes`, and
+`memory_mps_recommended_max_bytes` report tensor use, driver allocations, and the recommended working-set
+limit. That recommendation is not free VRAM. Process RSS is not total Slurm job memory and excludes
+other processes and some job-accounted memory such as filesystem cache; use Slurm accounting for job totals.

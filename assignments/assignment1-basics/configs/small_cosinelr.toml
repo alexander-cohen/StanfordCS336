@@ -3,6 +3,7 @@ schema_version = 1 # version of TOML structure
 [experiment]
 name = "tinystories-small-cosinelr"
 seed = 1337
+tags=["test"]
 
 [data]
 name = "tinystories"
@@ -37,16 +38,16 @@ lr_mode = "cosine_scheduled"
 lr_min = 1e-5
 lr_max = 1e-3
 warmup_steps = 100
-anneal_steps = 1000
+anneal_steps = 50000
 weight_decay = 0.0
 betas = [0.9, 0.999]
 epsilon = 1e-8
 
 [evaluation]
 # After this many optimizer steps, measure loss on validation data
-every_steps = 2
+every_steps = 20
 # Average loss over this many batches, using training.batch_size and model.context_length.
-batches = 2
+batches = 8
 
 [logging]
 # Write training metrics to metrics.jsonl at this interval
@@ -64,7 +65,7 @@ every_steps = 20
 keep_last = 2
 
 [runtime]
-device = "cpu"
+device = "auto"
 
 [tracking]
 # disabled: local JSONL only; offline: also save W&B records locally for later sync;

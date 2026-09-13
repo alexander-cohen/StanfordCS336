@@ -168,8 +168,9 @@ def test_throughput_excludes_nontraining_work(tmp_path, monkeypatch, log_every):
     )
     params = sum(p.numel() for p in result["model"].parameters())
     for record in records:
+        assert record["memory_process_rss_bytes"] > 0
         if record["step"] == 1:
-            assert "estimated_train_tflops" not in record
+            assert "estimated_train_flops_per_second" not in record
         else:
             assert record["train_tokens_per_second"] == 8
-            assert record["estimated_train_tflops"] == pytest.approx(6 * params * 8 / 1e12)
+            assert record["estimated_train_flops_per_second"] == pytest.approx(6 * params * 8)

@@ -88,14 +88,73 @@ def test_console_format_preserves_stored_precision(tmp_path, capsys):
     record = {
         "step": 2, "train_loss": 3.123456789, "validation_loss": 3.23456789,
         "learning_rate": 0.001, "elapsed_seconds": 3661.9,
-        "train_tokens_per_second": 12345.6, "estimated_train_tflops": 0.012345,
+        "train_tokens_per_second": 12345.6, "estimated_train_flops_per_second": 12_345_000_000,
     }
     with metric_logger(output, resolved) as log:
         log(record)
     terminal = capsys.readouterr().err
     assert "2/4" in terminal and "3.1235" in terminal
     assert "12,346" in terminal and "01:01:01" in terminal
-    assert "0.0123" in terminal
+    assert "est. FLOP/s" in terminal and "1.23e+10" in terminal
     assert json.loads((output / "metrics.jsonl").read_text()) == record
     # Missing validation or warmup throughput must not look like measured zero.
     assert "—" in format_metrics({"step": 1, "train_loss": 4.0})
+
+
+def test_cpu_memory_does_not_query_accelerators(monkeypatch):
+    from cs336_basics import metrics
+
+    monkeypatch.setattr(metrics.psutil, "Process", lambda: SimpleNamespace(
+        memory_info=lambda: SimpleNamespace(rss=3 * 1024**3)))
+    def unexpected(*args, **kwargs):
+        raise AssertionError("CPU logging must not query GPU memory")
+    monkeypatch.setattr(torch.cuda, "mem_get_info", unexpected)
+    monkeypatch.setattr(torch.mps, "current_allocated_memory", unexpected)
+    record = metrics.memory_metrics("cpu")
+    assert record == {"memory_process_rss_bytes": 3 * 1024**3}
+    assert "RAM RSS 3.00 GiB" in format_metrics({"step": 1, "train_loss": 1, **record})
+
+
+def test_cuda_memory_units_and_device_scope(monkeypatch):
+    from cs336_basics import metrics
+
+    gib = 1024**3
+    values = {
+        "mem_get_info": (2 * gib, 24 * gib),
+        "memory_allocated": 8 * gib,
+        "memory_reserved": 12 * gib,
+        "max_memory_allocated": 10 * gib,
+        "max_memory_reserved": 14 * gib,
+        "memory_stats": {"num_alloc_retries": 3, "num_ooms": 1},
+    }
+    def getter(value):
+        def query(device):
+            assert device == torch.device("cuda:1")
+            return value
+        return query
+    for name, value in values.items():
+        monkeypatch.setattr(torch.cuda, name, getter(value))
+    record = metrics.memory_metrics("cuda:1")
+    assert record["memory_cuda_allocated_bytes"] == 8 * gib
+    assert record["memory_cuda_peak_allocated_bytes"] == 10 * gib
+    assert record["memory_cuda_peak_reserved_bytes"] == 14 * gib
+    assert record["memory_cuda_num_alloc_retries"] == 3
+    assert record["memory_cuda_num_ooms"] == 1
+    assert record["memory_process_rss_bytes"] > 0
+    terminal = format_metrics({"step": 1, "train_loss": 1, **record})
+    assert "GPU alloc 8.00 peak 10.00 reserved 12.00 free 2.00 / total 24.00 GiB" in terminal
+    assert "alloc retries 3" in terminal
+
+
+def test_mps_memory_uses_recommended_limit_label(monkeypatch):
+    from cs336_basics import metrics
+
+    for name, value in (("current_allocated_memory", 1024**3),
+                        ("driver_allocated_memory", 2 * 1024**3),
+                        ("recommended_max_memory", 8 * 1024**3)):
+        monkeypatch.setattr(torch.mps, name, lambda value=value: value)
+    record = metrics.memory_metrics("mps")
+    assert record["memory_mps_allocated_bytes"] == 1024**3
+    assert "memory_cuda_free_bytes" not in record
+    terminal = format_metrics({"step": 1, "train_loss": 1, **record})
+    assert "MPS alloc 1.00 driver 2.00 recommended max 8.00 GiB" in terminal
