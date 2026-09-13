@@ -106,24 +106,45 @@ decision. Failed or invalid runs stay in the record with an explanation.
 
 ## Local verification sequence
 
+Configuration remains a dictionary from resolution through execution and JSON recording.
+`run_experiment` passes `resolved["model"]` and `resolved["training"]` directly to the loop;
+there are no model/training configuration dataclasses. `learning_rate_at(training, step)` selects the schedule.
+The loop saves the resolved dictionary directly, without nesting another copy of it. Standalone loop tests
+may supply the two dictionaries directly; in that case a minimal configuration record is assembled.
+Pass `device`, `checkpoint_every`, and `log_every` directly to `training_loop` from the runtime, checkpoint,
+and logging sections. The loop defaults to CPU and a checkpoint cadence of 100; `run_experiment` resolves
+`device = "auto"` to a concrete device before calling it.
+This field-name change also changes checkpoint configuration hashes: checkpoints from the earlier config layout
+cannot resume through the strict compatibility check without an explicit migration.
+
 The training loop now accepts keyword-only `log_every`, `resume_from`, `stop_after`, and
 `resolved_config` arguments. `checkpoint_out` must name a new attempt directory; it contains
 configuration, JSONL metrics/events, and periodic/final numbered checkpoints. A resumed attempt uses a
 new directory, retains the original run ID, and records the parent checkpoint in its resume event.
 Use `stop_after` to interrupt at an absolute step while keeping the full training budget unchanged.
-Resumption checks configuration and a hash of the actual training tokens, then restores optimizer
+Resumption checks model/training/device settings and hashes of the actual training and validation tokens, then restores optimizer
 and RNG state. Hashing reads the dataset once per invocation in bounded chunks.
 Each checkpoint excludes accumulated metric histories. JSONL records are flushed after each write;
-checkpoint files are flushed, fsynced, and replaced atomically. Retention/deletion is not yet enabled.
+checkpoint files are flushed, fsynced, and replaced atomically. `keep_last` retains the newest checkpoints in the
+current attempt only, removing older ones after a successful save and recording deletion events. Parent attempts
+are untouched. Deleted checkpoints are not recoverable from this workflow; retain copies separately if needed.
 CPU interruption equivalence is tested; accelerator equivalence has not yet been verified.
-The CLI still only performs configuration dry runs; connecting it to training is a subsequent step.
-The fuller run-directory contract below/above describes the target workflow; source/environment manifests,
-validation evaluation, and W&B integration are not yet wired into this loop.
+The CLI supports execution and dry runs. Launch with `uv run python -m scripts.run_experiment --config configs/smoke.toml`.
+Use `--stop-after 2` to pause at step 2 and `--resume-from /absolute/path/to/2.pt` to continue in a fresh attempt.
+`run_experiment` seeds generators, validates and memory-maps integer NPY token arrays, and writes a final summary.
+Validation uses repeatable batches without advancing training RNG state. Final-step metrics include validation.
+Data checking and hashing read the datasets in bounded chunks before training, even for short smoke runs.
+Tokenizer files are checked for existence but are not loaded: training consumes pretokenized IDs and does not
+generate samples through this launcher. Their compatibility with the arrays must be established during preprocessing.
+The fuller run-directory contract describes the target workflow; source/environment manifests and W&B integration
+are not yet wired in. W&B modes other than disabled are rejected. Summary JSON is published atomically before
+complete/paused is recorded; summary failures produce an error event and leave saved checkpoints available.
+Absolute paths, TOML comments, logging cadence, and provenance are excluded from resume compatibility comparisons.
 
 Resolve the smoke preset without creating a run:
 
 ```sh
-uv run python -m scripts.train --config configs/smoke.toml --dry-run
+uv run python -m scripts.run_experiment --config configs/smoke.toml --dry-run
 ```
 
 Infrastructure is promoted in this order:

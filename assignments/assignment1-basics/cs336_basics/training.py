@@ -12,16 +12,14 @@ from typing import Literal, Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import cs336_basics.transformer as transformer
-from cs336_basics.transformer import ModelConfig
 import cs336_basics.decode as decode
 from tests.conftest import vocab_size
-from dataclasses import dataclass, asdict
 from contextlib import ExitStack
 import hashlib
 import json
 import logging
 import uuid
-from cs336_basics.run_io import atomic_save, capture_rng, restore_rng, write_event
+from cs336_basics.run_io import atomic_save, atomic_json, capture_rng, restore_rng, write_event, resume_settings
 import pprint
 import random
 import time
@@ -58,56 +56,16 @@ class SGD(torch.optim.Optimizer):
                 return loss
 
 
-@dataclass(frozen=True)
-class TrainingConfig:
-    batch_size: int
-    training_steps: int
-    save_dist: int
-    grad_clip: float
-    device: torch.device
-    lr_mode: Literal["basic", "cosine_scheduled"]
-    eps: float = 1e-8
-    weight_decay: float = 0.0
-    betas: tuple[float, float] = (0.9, 0.999)
-    lr: float | None = None
-    time_warmup: int | None = None
-    time_final_anneal: int | None = None
-    lr_max: float | None = None
-    lr_min: float | None = None
-
-    def __post_init__(self):
-        if self.lr_mode == "basic":
-            if self.lr is None:
-                raise ValueError("lr is required when lr_mode='basic'")
-            return
-
-        schedule_values = (self.time_warmup, self.time_final_anneal, self.lr_max, self.lr_min)
-        if any(value is None for value in schedule_values):
-            raise ValueError(
-                "time_warmup, time_final_anneal, lr_max, and lr_min are required "
-                "when lr_mode='cosine_scheduled'"
-            )
-
-    def learning_rate_at(self, step: int) -> float:
-        if self.lr_mode == "basic":
-            if self.lr is None:
-                raise RuntimeError("basic learning-rate configuration was not validated")
-            return self.lr
-
-        if (
-            self.time_warmup is None
-            or self.time_final_anneal is None
-            or self.lr_max is None
-            or self.lr_min is None
-        ):
-            raise RuntimeError("cosine learning-rate configuration was not validated")
-        return lr_cosine_schedule(
-            step,
-            self.lr_max,
-            self.lr_min,
-            self.time_warmup,
-            self.time_final_anneal,
-        )
+def learning_rate_at(training, step):
+    """Read the validated schedule settings directly from the training section."""
+    if training["lr_mode"] == "basic":
+        return training["learning_rate"]
+    if training["lr_mode"] != "cosine_scheduled":
+        raise ValueError("Unknown learning-rate mode")
+    return lr_cosine_schedule(
+        step, training["lr_max"], training["lr_min"],
+        training["warmup_steps"], training["anneal_steps"],
+    )
 
 
 class AdamW(torch.optim.Optimizer):
@@ -126,14 +84,6 @@ class AdamW(torch.optim.Optimizer):
         for p in self.state.keys():
             self.state[p]['m'] = torch.zeros(p.shape)
             self.state[p]['v'] = torch.zeros(p.shape)
-
-    @classmethod
-    def from_training_params(cls, params, training_params: TrainingConfig):
-        return cls(params, 
-                   betas=training_params.betas,
-                    eps=training_params.eps,
-                    lr=training_params.learning_rate_at(0),
-                    weight_decay=training_params.weight_decay)
 
     def set_lr(self, lr):
         for group in self.param_groups:
@@ -247,9 +197,11 @@ def grad_norm(parameters):
 
 ## old version written by me was replaced by codex version for better logging
 def training_loop(
-    x, model_params: ModelConfig, training_params: TrainingConfig,
+    x, model_params: dict, training_params: dict,
     checkpoint_out=None, verbose=True, tok=None, prompt="",
-    *, log_every=1, resume_from=None, stop_after=None, resolved_config=None,
+    *, device="cpu", checkpoint_every=100, log_every=1,
+    resume_from=None, stop_after=None, resolved_config=None,
+    validation_data=None, eval_every=100, eval_batches=2, keep_last=None,
 ):
     """Train with scalar logs and resumable snapshots.
 
@@ -258,38 +210,64 @@ def training_loop(
     stop_after is an absolute completed-step boundary for interruption tests;
     it does not change the planned budget or learning-rate schedule.
     """
-    if log_every <= 0 or training_params.save_dist <= 0 or training_params.training_steps <= 0:
+    if log_every <= 0 or checkpoint_every <= 0 or training_params["steps"] <= 0:
         raise ValueError("Logging cadence, checkpoint cadence, and training steps must be positive")
-    if len(x) <= model_params.context_length:
+    if keep_last is not None and (type(keep_last) is not int or keep_last <= 0):
+        raise ValueError("keep_last must be a positive integer or None")
+    if len(x) <= model_params["context_length"]:
         raise ValueError("Training data must be longer than context_length")
-    end_step = training_params.training_steps if stop_after is None else stop_after
-    if not 0 < end_step <= training_params.training_steps:
+    if validation_data is not None and (
+        len(validation_data) <= model_params["context_length"] or eval_every <= 0 or eval_batches <= 0
+    ):
+        raise ValueError("Validation requires sufficient data and positive cadence/batch count")
+    end_step = training_params["steps"] if stop_after is None else stop_after
+    if not 0 < end_step <= training_params["steps"]:
         raise ValueError("stop_after must lie within the planned training budget")
 
-    device = torch.device(training_params.device)
+    device = torch.device(device)
     # Store plain configuration values, not pickled dataclass instances.
-    configuration = {
-        "model": asdict(model_params),
-        "training": {**asdict(training_params), "device": str(device)},
-        "experiment": resolved_config,
+    # Save the authoritative resolved dictionary directly. Standalone tests can
+    # supply just the model/training sections and an explicit device.
+    configuration = resolved_config if resolved_config is not None else {
+        "model": model_params, "training": training_params,
+        "runtime": {"device": str(device)},
     }
     config_json = json.dumps(configuration, sort_keys=True, default=str)
-    config_hash = hashlib.sha256(config_json.encode()).hexdigest()
+    compatible_json = json.dumps(resume_settings(configuration), sort_keys=True, default=str)
+    config_hash = hashlib.sha256(compatible_json.encode()).hexdigest()
     # Include the actual token bytes: equal shapes alone do not identify a dataset.
     data_hash = hashlib.sha256()
     for offset in range(0, len(x), 1_000_000):
         data_hash.update(np.ascontiguousarray(x[offset:offset + 1_000_000]).tobytes())
     data_identity = {"sha256": data_hash.hexdigest(), "shape": list(x.shape), "dtype": str(x.dtype)}
+    if validation_data is not None:
+        validation_hash = hashlib.sha256()
+        for offset in range(0, len(validation_data), 1_000_000):
+            validation_hash.update(np.ascontiguousarray(validation_data[offset:offset + 1_000_000]).tobytes())
+        data_identity["validation"] = {
+            "sha256": validation_hash.hexdigest(), "shape": list(validation_data.shape),
+            "dtype": str(validation_data.dtype),
+        }
 
-    model = transformer.Transformer.from_model_params(model_params).to(device)
-    opt = AdamW.from_training_params(model.parameters(), training_params)
+    # Keep the existing Transformer constructor (theta) compatible with adapters.
+    model_args = dict(model_params)
+    model_args["theta"] = model_args.pop("rope_theta", 10000.0)
+    model = transformer.Transformer(**model_args).to(device)
+    opt = AdamW(
+        model.parameters(), lr=learning_rate_at(training_params, 0),
+        betas=tuple(training_params.get("betas", (0.9, 0.999))),
+        eps=training_params.get("epsilon", 1e-8),
+        weight_decay=training_params.get("weight_decay", 0.0),
+    )
     start_step, tokens_seen, elapsed_before = 0, 0, 0.0
     run_id = uuid.uuid4().hex
     if resume_from is not None:
         saved = torch.load(resume_from, map_location="cpu", weights_only=True)
         if saved.get("format_version") != 1:
             raise ValueError("This checkpoint lacks the state needed for training resume")
-        if saved["config_hash"] != config_hash or saved["data_identity"] != data_identity:
+        # Compare explicit settings, including for older format-1 checkpoints
+        # whose hash also included machine paths and the raw preset file hash.
+        if resume_settings(saved["configuration"]) != resume_settings(configuration) or saved["data_identity"] != data_identity:
             raise ValueError("Resume configuration or training data differs from the checkpoint")
         start_step = saved["iteration"]
         if not start_step < end_step:
@@ -329,10 +307,11 @@ def training_loop(
               checkpoint=str(resume_from) if resume_from is not None else None)
         started = time.perf_counter()
         last_metric = None
+        saved_paths = []  # Only checkpoints created by THIS invocation can expire.
         try:
             model.train()
             for step in range(start_step + 1, end_step + 1):
-                inputs, targets = get_batch(x, training_params.batch_size, model_params.context_length, device)
+                inputs, targets = get_batch(x, training_params["batch_size"], model_params["context_length"], device)
                 opt.zero_grad()
                 loss = nn_utils.cross_entropy(model(inputs), targets)
                 if not torch.isfinite(loss).item():
@@ -341,12 +320,12 @@ def training_loop(
                 before_clip = grad_norm(model.parameters())
                 if not math.isfinite(before_clip):
                     raise FloatingPointError(f"Non-finite gradient norm at step {step}")
-                nn_utils.gradient_clipping(model.parameters(), training_params.grad_clip)
+                nn_utils.gradient_clipping(model.parameters(), training_params["grad_clip"])
                 after_clip = grad_norm(model.parameters())
-                lr = training_params.learning_rate_at(step)
+                lr = learning_rate_at(training_params, step)
                 opt.set_lr(lr)
                 opt.step()
-                tokens_seen += training_params.batch_size * model_params.context_length
+                tokens_seen += training_params["batch_size"] * model_params["context_length"]
                 # Accelerator work is asynchronous; synchronize for meaningful timings.
                 if device.type == "cuda":
                     torch.cuda.synchronize(device)
@@ -359,12 +338,37 @@ def training_loop(
                     "grad_norm": before_clip, "clipped_grad_norm": after_clip,
                     "elapsed_seconds": elapsed,
                 }
-                if step % log_every == 0 or step == end_step:
+                evaluate = validation_data is not None and (step % eval_every == 0 or step == end_step)
+                if evaluate:
+                    # Use repeatable validation batches, without advancing the
+                    # Python/PyTorch generators that determine future training.
+                    rng = capture_rng(device)
+                    model.eval()
+                    try:
+                        random.seed(0)
+                        validation_loss = 0.0
+                        with torch.no_grad():
+                            for _ in range(eval_batches):
+                                val_inputs, val_targets = get_batch(
+                                    validation_data, training_params["batch_size"], model_params["context_length"], device)
+                                validation_loss += nn_utils.cross_entropy(model(val_inputs), val_targets).item()
+                        last_metric["validation_loss"] = validation_loss / eval_batches
+                        if not math.isfinite(last_metric["validation_loss"]):
+                            raise FloatingPointError(f"Non-finite validation loss at step {step}")
+                    finally:
+                        model.train()
+                        restore_rng(rng)
+                    # Include evaluation time in this record and saved elapsed time.
+                    elapsed = elapsed_before + time.perf_counter() - started
+                    last_metric["elapsed_seconds"] = elapsed
+                if step % log_every == 0 or step == end_step or evaluate:
                     if metrics is not None:
                         write_event(metrics, last_metric)
                     logger.info("step=%d tokens=%d loss=%.6f lr=%g", step, tokens_seen, loss.item(), lr)
+                    if evaluate:
+                        logger.info("step=%d validation_loss=%.6f", step, last_metric["validation_loss"])
 
-                if step % training_params.save_dist == 0 or step == end_step:
+                if step % checkpoint_every == 0 or step == end_step:
                     if output is not None:
                         # History lives in JSONL; only continuation state goes here.
                         destination = output / f"{step}.pt"
@@ -376,6 +380,15 @@ def training_loop(
                         })
                         event("checkpoint", step=step, path=str(destination))
                         logger.info("Saved checkpoint %s", destination)
+                        saved_paths.append(destination)
+                        # Delete old checkpoints only AFTER the replacement saves.
+                        # The parent checkpoint of a resumed attempt is untouched.
+                        if keep_last is not None:
+                            while len(saved_paths) > keep_last:
+                                expired = saved_paths[0]
+                                expired.unlink()
+                                saved_paths.pop(0)
+                                event("checkpoint_deleted", step=step, path=str(expired))
                     if tok is not None:
                         # Sampling must not change subsequent training randomness.
                         rng = capture_rng(device)
@@ -389,7 +402,15 @@ def training_loop(
                         finally:
                             model.train()
                             restore_rng(rng)
-            event("complete" if end_step == training_params.training_steps else "paused", step=end_step)
+            status = "complete" if end_step == training_params["steps"] else "paused"
+            if output is not None:
+                atomic_json({
+                    "run_id": run_id, "attempt_id": attempt_id, "output_dir": str(output),
+                    "status": status, "last_metric": last_metric,
+                }, output / "summary.json")
+            # Summary publication is part of success, so a failure above is logged
+            # as an error rather than followed by a misleading completion event.
+            event(status, step=end_step)
         except BaseException as error:
             event("error", error_type=type(error).__name__, message=str(error))
             raise

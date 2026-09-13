@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 import math
 from typing import Dict
 import torch
@@ -281,17 +280,6 @@ class TransformerBlock(nn.Module):
 		return y + self.swiglu(self.rms2(y))
 
 
-@dataclass(frozen=True)
-class ModelConfig:
-    vocab_size: int
-    context_length: int
-    num_heads: int
-    num_layers: int
-    d_model: int
-    d_ff: int
-    rope_theta: float = 10000.
-
-
 class Transformer(nn.Module):
 	def __init__(self, 
 			  vocab_size: int, 
@@ -311,17 +299,6 @@ class Transformer(nn.Module):
 		self.blocks = nn.ModuleList([TransformerBlock(d_model, num_heads, context_length, d_ff, rope) for j in range(num_layers)])
 		self.final_RMS = RMS(d_model)
 		self.final_lin = Linear(d_model, vocab_size)
-
-	@classmethod
-	def from_model_params(cls, model_params: ModelConfig):
-		return cls(
-			vocab_size=model_params.vocab_size,
-			context_length=model_params.context_length,
-			num_layers=model_params.num_layers,
-			d_model=model_params.d_model,
-			num_heads=model_params.num_heads,
-			d_ff=model_params.d_ff,
-			theta=model_params.rope_theta)
 
 	def forward(self, in_toks: Int[Tensor, "... seq_len"]):
 		x = self.embedding(in_toks)

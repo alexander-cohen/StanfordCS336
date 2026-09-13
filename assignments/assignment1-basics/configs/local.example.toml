@@ -1,0 +1,8 @@
+# Copy this file to configs/local.toml and replace the placeholders.
+# configs/local.toml is ignored by Git because these paths are machine-specific.
+
+[data]
+root = "/absolute/path/to/data"
+
+[runs]
+root = "/absolute/path/to/runs/cs336"

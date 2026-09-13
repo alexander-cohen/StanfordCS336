@@ -21,7 +21,7 @@ tiny_stories_valid_dat = np.load(tiny_stories_valid_tokd, mmap_mode='r')
 
 checkpoint_dir = f"/Users/alexandercohen/Local Documents/checkpoints/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
-model_params = transformer.ModelConfig(
+model_params = dict(
     vocab_size=10000,
     context_length=256,
     num_heads=16,
@@ -31,7 +31,7 @@ model_params = transformer.ModelConfig(
     rope_theta = 10000
 )
 
-small_model_params = transformer.ModelConfig(
+small_model_params = dict(
     vocab_size=10000,
     context_length=16,
     num_heads=16,
@@ -41,23 +41,20 @@ small_model_params = transformer.ModelConfig(
     rope_theta = 10000
 )
 
-training_params = training.TrainingConfig(
+training_params = dict(
     batch_size=16,
-    training_steps=10000,
-    save_dist = 100 ,
+    steps=10000,
     grad_clip=float('inf'),
-    device=torch.device('mps'),
     lr_mode= 'basic',# 'cosine_scheduled',
     weight_decay= 0.0,
     betas = (0.9, 0.999),
-    time_warmup=100,
-    time_final_anneal=10000,
-    lr = 1e-2,
+    warmup_steps=100,
+    anneal_steps=10000,
+    learning_rate = 1e-2,
     lr_max = 3e-4,
     lr_min = 3e-5
 )
 
 
 # tiny_stories_valid_dat_small = tiny_stories_valid_dat[:17]
-training.training_loop(tiny_stories_valid_dat, model_params, training_params, checkpoint_out=checkpoint_dir, tok = tok)
-
+training.training_loop(tiny_stories_valid_dat, model_params, training_params, checkpoint_out=checkpoint_dir, tok = tok, device="mps", checkpoint_every=100)
