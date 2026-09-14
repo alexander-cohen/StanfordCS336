@@ -45,6 +45,8 @@ def test_tracking_mirrors_metrics_and_closes_on_error(tmp_path, monkeypatch):
             raise RuntimeError("training failed")
     assert calls[0]["id"] == output.name
     assert calls[0]["group"] == "logical-run"
+    assert calls[0]["config"]["run_folder"] == output.name
+    assert calls[0]["config"]["logical_run_id"] == "logical-run"
     assert "resolved_paths" not in calls[0]["config"]
     assert logged == [({"step": 3, "train_loss": 1.5}, 3)]
     assert exits == [RuntimeError]

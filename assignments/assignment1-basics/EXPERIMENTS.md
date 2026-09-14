@@ -125,6 +125,9 @@ Do not put an API key in TOML or Git. Offline records can later be uploaded with
 Numeric metrics are plotted against optimizer step. Each execution has a distinct W&B run identified by its
 directory name; resumed executions share a group via the logical run ID, so restarting an older checkpoint
 does not overwrite newer history. W&B opens at the first logged step and closes on success or failure.
+W&B config includes `run_folder` (the directory name) and `logical_run_id` (shared by continuations).
+With verbose output enabled, the Logs tab also shows the W&B run ID, logical run ID, and full local
+run-folder path once at startup, after console capture starts.
 Portable settings and numeric metrics are sent; this integration does not upload datasets/checkpoints or
 automatically capture source or Git metadata. Console output is captured from the first logged step onward.
 W&B may collect system metadata.

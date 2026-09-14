@@ -113,6 +113,8 @@ def metric_logger(output, config, *, verbose=True):
                         tags=config["experiment"].get("tags", []),
                         config={
                             **portable, "seed": config["experiment"]["seed"],
+                            "run_folder": output.name,
+                            "logical_run_id": record["run_id"],
                             **{key: config.get("provenance", {}).get(key)
                                for key in ("git_commit", "git_dirty", "git_error")},
                         },
@@ -122,6 +124,13 @@ def metric_logger(output, config, *, verbose=True):
                     ))
                     tracker.define_metric("step")
                     tracker.define_metric("*", step_metric="step")
+                    if verbose:
+                        print(
+                            f"W&B run ID: {output.name}\n"
+                            f"Logical run ID: {record['run_id']}\n"
+                            f"Run folder: {output.resolve()}",
+                            file=sys.stderr, flush=True,
+                        )
                 # Initialize console capture before printing the first metric.
                 if verbose:
                     print(format_metrics(record, config["training"]["steps"]), file=sys.stderr, flush=True)
