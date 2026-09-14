@@ -6,7 +6,7 @@
 # The existing train.slurm launches training directly; it does not launch an agent.
 # Additional agents using the same sweep ID receive additional trials.
 
-name: tinystories-constant-lr-grid
+name: tinystories-constant-batch-grid
 description: One base TOML with five constant learning-rate overrides.
 project: cs336-assignment1
 program: scripts/run_experiment.py
