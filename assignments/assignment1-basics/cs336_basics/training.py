@@ -268,6 +268,7 @@ def training_loop(
     )
     start_step, tokens_seen, elapsed_before = 0, 0, 0.0
     total_eval_seconds, total_checkpoint_seconds = 0.0, 0.0
+    total_train_seconds = 0.0
     # Identifies the logical experiment across launches: new for fresh training,
     # but inherited from the checkpoint when continuing an existing run.
     run_id = uuid.uuid4().hex
@@ -291,6 +292,7 @@ def training_loop(
         run_id = saved["run_id"]  # Link this continuation to the original run.
         total_eval_seconds = saved.get("total_eval_seconds", 0.0)
         total_checkpoint_seconds = saved.get("total_checkpoint_seconds", 0.0)
+        total_train_seconds = saved.get("total_train_seconds", 0.0)
         # A checkpoint cannot contain the duration of its own completed write.
         # Its optional sidecar supplies that final timing without rewriting weights.
         timing_path = Path(resume_from).with_suffix(".timing.json")
@@ -343,6 +345,8 @@ def training_loop(
         elif device.type == "mps":
             torch.mps.synchronize()
         step_seconds = time.perf_counter() - step_started
+        # Cumulative training time includes every update, including warmup.
+        total_train_seconds += step_seconds
         # Skip the first update of each launch (including resumes) as warmup.
         # Sum training time only: batching, forward/backward, and optimizer work.
         # Validation, sampling, checkpointing, and logging are outside this timer.
@@ -405,6 +409,7 @@ def training_loop(
                     "tokens_seen": tokens_seen, "elapsed_seconds": elapsed,
                     "total_eval_seconds": total_eval_seconds,
                     "total_checkpoint_seconds": total_checkpoint_seconds,
+                    "total_train_seconds": total_train_seconds,
                     "configuration": configuration,
                     "data_identity": data_identity, "rng": capture_rng(device),
                 })
@@ -426,6 +431,7 @@ def training_loop(
                         expired.with_suffix(".timing.json").unlink(missing_ok=True)
                         saved_paths.pop(0)
         last_metric.update({
+            "total_train_seconds": total_train_seconds,
             "total_eval_seconds": total_eval_seconds,
             "total_checkpoint_seconds": total_checkpoint_seconds,
             "elapsed_seconds": elapsed_before + time.perf_counter() - started,

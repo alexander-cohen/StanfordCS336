@@ -181,6 +181,12 @@ atomic replacement, but excluding retention cleanup, timing metadata, and text s
 Both appear in JSONL, W&B, and console output on steps where that operation happens.
 Checkpoint steps emit a metric record even when they fall outside the regular logging cadence.
 `total_eval_seconds` and `total_checkpoint_seconds` are cumulative totals on every record.
+`total_train_seconds` accumulates the synchronized training-update durations, including
+batching, forward/backward, gradient checks/clipping, and optimizer work. It includes the
+first warmup update, unlike the throughput averages, and excludes evaluation, checkpointing,
+sampling, logging, and setup. It is logged to JSONL/W&B and stored directly in checkpoints
+for continuation across resumes. Older checkpoints without this field start the total at zero;
+training time from before that checkpoint cannot be reconstructed exactly.
 Training throughput still excludes both operations. `elapsed_seconds` includes all wall time
 since loop entry through evaluation/checkpointing at the recorded step, excluding setup and downtime.
 The current step's logging and subsequent text sampling appear in later elapsed readings.

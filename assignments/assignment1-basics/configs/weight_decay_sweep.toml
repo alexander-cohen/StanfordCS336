@@ -1,0 +1,72 @@
+schema_version = 1 # version of TOML structure
+
+[experiment]
+name = "tinystories-small-basic-weight-decay-sweep"
+seed = 1337
+tags=["weight_decay_sweep"]
+
+[data]
+name = "tinystories"
+version = "gpt4-tokenized-v1"
+train_file = "tinystories/TinyStoriesV2-GPT4-train_tokd.npy"
+validation_file = "tinystories/TinyStoriesV2-GPT4-valid_tokd.npy"
+
+[tokenizer]
+# Trusted pickle files, relative to the project root; used for checkpoint-time text samples.
+vocab_file = "tokenizers/ts_train_10000_vocab.pkl"
+merges_file = "tokenizers/ts_train_10000_merges.pkl"
+end_of_text = "<|endoftext|>"
+
+[model]
+vocab_size = 10000
+context_length = 256
+num_heads = 16
+num_layers = 4
+d_model = 512
+d_ff = 1344
+rope_theta = 10000.0
+
+[training]
+batch_size = 8
+# Specify steps OR total_tokens; tokens per step = batch_size * context_length (token budgets round up to whole steps).
+total_tokens = 327680000
+grad_clip = 1.0
+# lr_mode = "basic" OR "cosine_scheduled"
+# if lr_mode == basic, include learning_rate
+# if lr_mode == cosine_scheduled, include lr_min, lr_max, warmup_steps, anneal_steps
+lr_mode = "basic"
+learning_rate = 1e-4
+weight_decay = 0.0
+betas = [0.9, 0.999]
+epsilon = 1e-8
+
+[evaluation]
+# After this many optimizer steps, measure loss on validation data
+every_steps = 200
+# Average loss over this many batches, using training.batch_size and model.context_length.
+batches = 32
+
+[logging]
+# Write training metrics to metrics.jsonl at this interval
+# Records include loss, learning rate, gradient norms, tokens seen, elapsed time, and validation loss when evaluated.
+every_steps = 20
+
+[checkpoint]
+# Save a resumable <step>.pt file after this many optimizer steps and at the final
+# step (including a pause). It contains model/optimizer state, progress, RNG state,
+# configuration, and data identity; metric history stays in the JSONL files.
+every_steps = 1000
+# Keep only the newest checkpoints created by this execution. Older ones are
+# deleted only after a new save succeeds; checkpoints from a prior attempt that
+# we resumed from are not deleted. This is recency-based, not best-validation-loss.
+keep_last = 2
+
+[runtime]
+device = "auto"
+
+[tracking]
+# disabled: local JSONL only; offline: also save W&B records locally for later sync;
+# online: upload metrics/settings to W&B for live charts (requires wandb login).
+# Each execution is a separate W&B run; resumed attempts share a group.
+wandb_mode = "online"
+wandb_project = "cs336-assignment1"

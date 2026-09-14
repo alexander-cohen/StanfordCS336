@@ -19,7 +19,7 @@ if (( $# > 1 )); then
     echo "Usage: sbatch scripts/sweep.slurm [ENTITY/PROJECT/SWEEP_ID]" >&2
     exit 1
 fi
-sweep_id="${1:-ac6074-new-york-university/cs336-assignment1/3q0f12rh}"
+# sweep_id="${1:-ac6074-new-york-university/cs336-assignment1/3q0f12rh}"
 
 cd "${SLURM_SUBMIT_DIR:?Submit with sbatch from assignment1-basics}"
 if [[ ! -f scripts/run_experiment.py || ! -f pyproject.toml ]]; then
