@@ -228,7 +228,7 @@ def _resolve_root(
     return ResolvedRoot(path=path, source=source)
 
 
-def _resolve_relative_file(base: Path, raw_value: str, label: str) -> Path:
+def _resolve_relative_file(base: Path, raw_value: str, label: str, *, allow_missing=False) -> Path | None:
     relative_path = Path(raw_value)
     if relative_path.is_absolute():
         raise ExperimentConfigError(f"{label} must be relative, got: {raw_value}")
@@ -237,6 +237,9 @@ def _resolve_relative_file(base: Path, raw_value: str, label: str) -> Path:
     path = (base / relative_path).resolve()
     if not path.is_relative_to(base):
         raise ExperimentConfigError(f"{label} escapes its configured root: {raw_value}")
+    if allow_missing and not path.exists():
+        warnings.warn(f"Validation file is missing: {path}; continuing without validation.", stacklevel=2)
+        return None
     if not path.is_file():
         raise ExperimentConfigError(f"{label} does not exist: {path}")
     return path
@@ -302,9 +305,13 @@ def resolve_experiment(
         data_root.path,
         data["validation_file"],
         "data.validation_file",
+        allow_missing=True,
     )
-    if train_path == validation_path:
-        raise ExperimentConfigError("Training and validation files must be distinct")
+    if validation_path is not None and train_path.samefile(validation_path):
+        warnings.warn(
+            "Training and validation use the same file; validation loss is not a held-out estimate.",
+            stacklevel=2,
+        )
 
     tokenizer_vocab_path = _resolve_relative_file(root, tokenizer["vocab_file"], "tokenizer.vocab_file")
     tokenizer_merges_path = _resolve_relative_file(root, tokenizer["merges_file"], "tokenizer.merges_file")
@@ -314,7 +321,7 @@ def resolve_experiment(
         "data_root": str(data_root.path),
         "runs_root": str(runs_root.path),
         "train_data": str(train_path),
-        "validation_data": str(validation_path),
+        "validation_data": str(validation_path) if validation_path is not None else None,
         "tokenizer_vocab": str(tokenizer_vocab_path),
         "tokenizer_merges": str(tokenizer_merges_path),
     }
@@ -328,7 +335,7 @@ def resolve_experiment(
     }
     resolved["input_metadata"] = {
         "train_data_size_bytes": train_path.stat().st_size,
-        "validation_data_size_bytes": validation_path.stat().st_size,
+        "validation_data_size_bytes": validation_path.stat().st_size if validation_path is not None else None,
         "tokenizer_vocab_size_bytes": tokenizer_vocab_path.stat().st_size,
         "tokenizer_merges_size_bytes": tokenizer_merges_path.stat().st_size,
     }
@@ -379,7 +386,20 @@ def run_experiment(resolved, *, resume_from=None, stop_after=None, verbose=True)
     # invalid IDs before allocating a model or creating an output directory.
     arrays = {}
     for label in ("train_data", "validation_data"):
-        array = np.load(paths[label], mmap_mode="r", allow_pickle=False)
+        if label == "validation_data" and paths[label] is None:
+            continue
+        try:
+            array = np.load(paths[label], mmap_mode="r", allow_pickle=False)
+        except FileNotFoundError:
+            if label != "validation_data":
+                raise
+            warnings.warn(
+                f"Validation file is missing: {paths[label]}; continuing without validation.",
+                stacklevel=2,
+            )
+            paths[label] = None
+            resolved["input_metadata"]["validation_data_size_bytes"] = None
+            continue
         if array.ndim != 1 or not np.issubdtype(array.dtype, np.integer):
             raise ExperimentConfigError(f"{label} must be a one-dimensional integer NPY array")
         if len(array) <= model_config["context_length"]:
@@ -429,7 +449,7 @@ def run_experiment(resolved, *, resume_from=None, stop_after=None, verbose=True)
                 device=device, checkpoint_every=resolved["checkpoint"]["every_steps"],
                 keep_last=resolved["checkpoint"]["keep_last"],
                 log_every=resolved["logging"]["every_steps"], resolved_config=resolved,
-                validation_data=arrays['validation_data'], eval_every=resolved["evaluation"]["every_steps"],
+                validation_data=arrays.get('validation_data'), eval_every=resolved["evaluation"]["every_steps"],
                 eval_batches=resolved["evaluation"]["batches"],
                 resume_from=resume_from, stop_after=stop_after, verbose=verbose,
                 tok=tok, log_metrics=log_metrics, should_stop=should_stop,

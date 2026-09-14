@@ -9,7 +9,7 @@ tags = ["smoke", "local"]
 name = "tinystories"
 version = "gpt4-tokenized-v1"
 train_file = "tinystories/TinyStoriesV2-GPT4-valid_tokd.npy"
-# validation_file = "tinystories/TinyStoriesV2-GPT4-valid_tokd.npy"
+validation_file = "tinystories/TinyStoriesV2-GPT4-valid_tokd.npy"
 
 [tokenizer]
 # Trusted pickle files, relative to the project root; used for checkpoint-time text samples.
@@ -62,7 +62,7 @@ every_steps = 20
 keep_last = 2
 
 [runtime]
-device = "cpu"
+device = "auto"
 
 [tracking]
 # disabled: local JSONL only; offline: also save W&B records locally for later sync;

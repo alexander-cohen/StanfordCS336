@@ -59,6 +59,38 @@ def test_run_and_resume_with_validation(tmp_path):
     assert json.loads((resumed["output_dir"] / "summary.json").read_text())["status"] == "complete"
 
 
+@pytest.mark.parametrize("missing_when", ["resolve", "launch"])
+def test_missing_validation_warns_and_trains(tmp_path, missing_when):
+    resolved, preset, data, runs = setup_experiment(tmp_path)
+    (data / "tiny/valid.npy").unlink()
+    with pytest.warns(UserWarning, match="continuing without validation"):
+        if missing_when == "resolve":
+            resolved = resolve_experiment(
+                preset, root=tmp_path, environment={},
+                data_root_override=str(data), runs_root_override=str(runs))
+        result = run_experiment(resolved, verbose=False)
+    assert result["last_metric"]["step"] == 4
+    rows = [json.loads(line) for line in (result["output_dir"] / "metrics.jsonl").read_text().splitlines()]
+    assert all("validation_loss" not in row for row in rows)
+    saved = json.loads((result["output_dir"] / "config.resolved.json").read_text())
+    assert saved["resolved_paths"]["validation_data"] is None
+    assert saved["input_metadata"]["validation_data_size_bytes"] is None
+    assert (result["output_dir"] / "4.pt").is_file()
+
+
+def test_same_validation_file_warns_and_evaluates(tmp_path):
+    _, preset, data, runs = setup_experiment(tmp_path)
+    preset.write_text(preset.read_text().replace('validation_file = "tiny/valid.npy"',
+                                               'validation_file = "tiny/train.npy"'))
+    with pytest.warns(UserWarning, match="same file"):
+        resolved = resolve_experiment(
+            preset, root=tmp_path, environment={},
+            data_root_override=str(data), runs_root_override=str(runs))
+    result = run_experiment(resolved, verbose=False)
+    assert result["last_metric"]["step"] == 4
+    assert "validation_loss" in result["last_metric"]
+
+
 def test_invalid_tokens_fail_before_creating_run(tmp_path):
     resolved, _, data, runs = setup_experiment(tmp_path)
     np.save(data / "tiny/train.npy", np.full(100, 100, dtype=np.int32))

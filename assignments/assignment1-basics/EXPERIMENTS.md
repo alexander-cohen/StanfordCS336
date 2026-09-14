@@ -10,7 +10,8 @@ disk. Weights & Biases is an optional view of the same configuration and metrics
 3. Save the fully resolved configuration before the first optimizer update.
 4. Git commit/dirty status are recorded automatically; commit relevant code before important runs.
 5. Append metrics as they are produced so an interrupted run retains its history.
-6. Keep training and validation inputs explicit and distinct.
+6. Keep training and validation inputs explicit. Identical files warn that evaluation is not held out;
+   a missing validation file warns and disables validation for that execution.
 7. A checkpoint is valid only if resuming it has been tested against an uninterrupted run.
 8. Link research notes to the output directory; a logical run ID groups resumed executions.
 
@@ -180,6 +181,10 @@ next update. A second Ctrl+C raises KeyboardInterrupt immediately (normal cleanu
 does not guarantee a new checkpoint or summary. The previous signal handler is restored afterward.
 This behavior applies to main-thread `run_experiment` calls; setup before training uses normal Ctrl+C.
 `run_experiment` seeds generators, validates and memory-maps integer NPY token arrays, and writes a final summary.
+If the configured validation file is missing, training continues with a warning and no validation-loss
+metrics. The saved resolved validation path and size are null. If it is the same file as training,
+evaluation continues with a warning that its loss is not held out. Missing training inputs and malformed
+existing validation arrays remain errors. Checkpoint resume still requires matching dataset identities.
 Validation uses repeatable batches without advancing training RNG state. Final-step metrics include validation.
 Data checking and hashing read the datasets in bounded chunks before training, even for short smoke runs.
 The launcher loads the trusted tokenizer pickle files and checks vocabulary IDs against the model.

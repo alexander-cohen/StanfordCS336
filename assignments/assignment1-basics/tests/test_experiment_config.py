@@ -230,16 +230,25 @@ def test_dataset_paths_cannot_escape_data_root(tmp_path: Path) -> None:
         )
 
 
-def test_training_and_validation_files_must_be_distinct(tmp_path: Path) -> None:
+def test_training_and_validation_same_file_warns(tmp_path: Path) -> None:
     data_root, runs_root, preset = make_project(tmp_path)
     text = preset.read_text().replace('validation_file = "tiny/valid.npy"', 'validation_file = "tiny/train.npy"')
     preset.write_text(text)
 
-    with pytest.raises(ExperimentConfigError, match="must be distinct"):
-        resolve_experiment(
+    with pytest.warns(UserWarning, match="same file"):
+        resolved = resolve_experiment(
             preset,
             data_root_override=str(data_root),
             runs_root_override=str(runs_root),
             environment={},
             root=tmp_path,
         )
+    assert resolved["resolved_paths"]["train_data"] == resolved["resolved_paths"]["validation_data"]
+
+
+def test_missing_training_file_still_fails(tmp_path):
+    data_root, runs_root, preset = make_project(tmp_path)
+    (data_root / "tiny/train.npy").unlink()
+    with pytest.raises(ExperimentConfigError, match="data.train_file does not exist"):
+        resolve_experiment(preset, data_root_override=str(data_root),
+                           runs_root_override=str(runs_root), environment={}, root=tmp_path)
