@@ -8,8 +8,8 @@ tags = ["smoke", "local"]
 [data]
 name = "tinystories"
 version = "gpt4-tokenized-v1"
-train_file = "tinystories/TinyStoriesV2-GPT4-train_tokd.npy"
-validation_file = "tinystories/TinyStoriesV2-GPT4-valid_tokd.npy"
+train_file = "tinystories/TinyStoriesV2-GPT4-valid_tokd.npy"
+# validation_file = "tinystories/TinyStoriesV2-GPT4-valid_tokd.npy"
 
 [tokenizer]
 # Trusted pickle files, relative to the project root; used for checkpoint-time text samples.
