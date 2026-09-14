@@ -19,8 +19,10 @@ metric:
 # Dotted parameter names become CLI overrides; fixed settings come from one TOML.
 parameters:
   training.batch_size:
-    values: [1, 4, 8, 16, 32, 64, 128]
+    values: [1, 2, 4, 8, 16, 32, 64, 128]
 
+
+# bytes = context_len (256) * batch_size * 4
 # Each trial runs as a separate process using the prepared project environment.
 # ${args} expands to --training.learning_rate=<selected-value>.
 command:
