@@ -1,9 +1,9 @@
 import math
-from typing import Dict
+from typing import Dict, Literal
 import torch
 from jaxtyping import Float, Int, Bool
 import einops
-from torch import nn, Tensor
+from torch import Value, nn, Tensor
 import cs336_basics
 from cs336_basics.nn_utils import softmax
 import cs336_basics.nn_utils
@@ -90,6 +90,13 @@ def swigluf(x: Float[Tensor, "... d_model"],
 								einops.einsum(W3, x, "d_ff d_model, ... d_model -> ... d_ff"), W2, 
 								"... d_ff, d_model d_ff -> ... d_model")
 
+def siluf(x: Float[Tensor, "... d_model"], 
+		   W1: Float[Tensor, "d_ff d_model"],
+		   W2: Float[Tensor, "d_model d_ff"]) -> Float[Tensor, "... d_model"]:
+	
+	return einops.einsum(silu(einops.einsum(W1, x, "d_ff d_model, ... d_model -> ... d_ff")), W2, 
+								"... d_ff, d_model d_ff -> ... d_model")
+
 class SwiGLUFeedforward(nn.Module):
 	def __init__(self, 
 			  d_model: int, # hidden dimension
@@ -110,6 +117,25 @@ class SwiGLUFeedforward(nn.Module):
 	# FFN(x) = SwiGLU(x, W1, W2, W3) = W2(SiLU(W1 x) * W3 x)
 	def forward(self, x: Float[Tensor, "... d_model"]) -> Float[Tensor, "... d_model"]:
 		return swigluf(x, self.W1, self.W2, self.W3)
+
+class SiLUFeedforward(nn.Module):
+	def __init__(self, 
+			  d_model: int, # hidden dimension
+			  d_ff: int | None = None, # intermediate dimension
+			  dtype: torch.dtype = torch.float32):
+
+		super().__init__()
+		self.d_model = d_model
+		self.d_ff = math.ceil(self.d_model * 8/3 * (1/64)) * 64 if d_ff == None else d_ff
+		self.W1 = nn.Parameter(torch.empty(self.d_ff, self.d_model, dtype = dtype))
+		self.W2 = nn.Parameter(torch.empty(self.d_model, self.d_ff, dtype = dtype))
+		init_lin_mat(self.W1)
+		init_lin_mat(self.W2)
+		
+
+	# FFN(x) = SwiGLU(x, W1, W2, W3) = W2(SiLU(W1 x) * W3 x)
+	def forward(self, x: Float[Tensor, "... d_model"]) -> Float[Tensor, "... d_model"]:
+		return siluf(x, self.W1, self.W2)
 
 # Used ChatGPT to fix mine bc it was a bit hacky
 class RotaryPositionEmbedding(nn.Module):
@@ -254,20 +280,34 @@ class AttentionHead(nn.Module):
 
 		return MHA
 
+
+
 class TransformerBlock(nn.Module):
 	def __init__(self, 
 			  d_model: int, 
 			  num_heads: int, 
 			  max_seq_len: int,
 			  d_ff: int, 
-			  rope: RotaryPositionEmbedding | None = None):
+			  rope: RotaryPositionEmbedding | None = None, 
+			  position_embedding_mode: Literal["rope", "none"] = "rope", 
+			  normalization_mode: Literal["prenorm", "postnorm", "none"] = "prenorm",
+			  feedforward_mode: Literal["swiglu", "silu"] = "swiglu"):
 
 		super().__init__()
-		self.rms1 = RMS(d_model)
-		self.rms2 = RMS(d_model)
-		self.swiglu = SwiGLUFeedforward(d_model, d_ff=d_ff)
+		self.rms1 = RMS(d_model) if normalization_mode != "none" else None
+		self.rms2 = RMS(d_model) if normalization_mode != "none" else None
 
-		if rope == None:
+		if feedforward_mode == "swiglu":
+			self.ff_block = SwiGLUFeedforward(d_model, d_ff=d_ff)
+		elif feedforward_mode == "silu":
+			self.ff_block = SiLUFeedforward(d_model, d_ff=d_ff)
+		else:
+			raise ValueError(f"Unrecognized feedforward mode: {feedforward_mode}")
+
+		self.normalization_mode = normalization_mode
+		self.feedforward_mode = feedforward_mode
+
+		if rope == None or position_embedding_mode == "none":
 			self.attention = AttentionHead(d_model, num_heads, max_seq_len)
 			self.do_rope = False
 		else:
@@ -276,8 +316,17 @@ class TransformerBlock(nn.Module):
 		
 
 	def forward(self, x: Float[Tensor, "... seq_len d_model"]): 
-		y = x + self.attention(self.rms1(x))
-		return y + self.swiglu(self.rms2(y))
+		if self.normalization_mode == "prenorm":
+			y = x + self.attention(self.rms1(x))
+			return y + self.ff_block(self.rms2(y))
+		elif self.normalization_mode == "postnorm":
+			y = self.rms1(x + self.attention(x))
+			return self.rms2(y + self.ff_block(y))
+		elif self.normalization_mode == "none":
+			y = x + self.attention(x)
+			return y + self.ff_block(y)
+		else:
+			raise ValueError(f"Unrecognized normalization mode: {self.normalization_mode}")
 
 
 class Transformer(nn.Module):
@@ -288,22 +337,55 @@ class Transformer(nn.Module):
 			  d_model: int, 
 			  num_heads: int, 
 			  d_ff: int, 
-			  theta: float = 10000): # for rope
+			  theta: float = 10000, 
+			  position_embedding_mode: Literal["rope", "none"] = "rope", 
+			  normalization_mode: Literal["prenorm", "postnorm", "none"] = "prenorm",
+			  feedforward_mode: Literal["swiglu", "silu"] = "swiglu",
+			  ): # for rope
 
 		super().__init__()
+
+
+		self.position_embedding_mode = position_embedding_mode
+		self.normalization_mode = normalization_mode
+		self.feedforward_mode = feedforward_mode
 
 		self.embedding = Embedding(vocab_size, d_model)
 		assert(d_model % num_heads == 0)
 		self.context_length = context_length
-		rope = RotaryPositionEmbedding(theta, d_model // num_heads, context_length)
-		self.blocks = nn.ModuleList([TransformerBlock(d_model, num_heads, context_length, d_ff, rope) for j in range(num_layers)])
-		self.final_RMS = RMS(d_model)
+		rope = RotaryPositionEmbedding(theta, d_model // num_heads, context_length) if self.position_embedding_mode == "rope" else None
+		self.blocks = nn.ModuleList([TransformerBlock(d_model, num_heads, context_length, d_ff, rope, 
+												position_embedding_mode=self.position_embedding_mode, 
+												normalization_mode=self.normalization_mode, 
+												feedforward_mode=self.feedforward_mode) for j in range(num_layers)])
+		self.final_RMS = RMS(d_model) if self.normalization_mode == "prenorm" else None
 		self.final_lin = Linear(d_model, vocab_size)
+
+
 
 	def forward(self, in_toks: Int[Tensor, "... seq_len"]):
 		x = self.embedding(in_toks)
 		for b in self.blocks:
 			x = b(x)
 
-		y = self.final_lin(self.final_RMS(x))
-		return y
+		if self.normalization_mode == "prenorm":
+			y = self.final_lin(self.final_RMS(x))
+			return y
+		elif self.normalization_mode == "postnorm":
+			y = self.final_lin(x)
+			return y
+		elif self.normalization_mode == "none":
+			y = self.final_lin(x)
+			return y
+		else:
+			raise ValueError(f"Unrecognized normalization mode: {self.normalization_mode}")
+		# # if self.normalization_mode == "prenorm":
+		# 	y = self.final_lin(self.final_RMS(x))
+		# elif self.normalization_mode == "postnorm":
+		# 	y = self.final_RMS(self.final_lin(x))
+		# elif self.normalization_mode == "none":
+		# 	y = self.final_lin(x)
+		# else:
+		# 	raise ValueError(f"Unrecognized normalization mode: {self.normalization_mode}")
+
+		# return y

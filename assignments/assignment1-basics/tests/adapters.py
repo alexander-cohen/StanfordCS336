@@ -327,9 +327,9 @@ def run_transformer_block(
         transformer_block.attention.WO.copy_(weights['attn.output_proj.weight'].T)
         transformer_block.rms1.gains.copy_(weights['ln1.weight'])
         transformer_block.rms2.gains.copy_(weights['ln2.weight'])
-        transformer_block.swiglu.W1.copy_(weights['ffn.w1.weight'])
-        transformer_block.swiglu.W2.copy_(weights['ffn.w2.weight'])
-        transformer_block.swiglu.W3.copy_(weights['ffn.w3.weight'])
+        transformer_block.ff_block.W1.copy_(weights['ffn.w1.weight'])
+        transformer_block.ff_block.W2.copy_(weights['ffn.w2.weight'])
+        transformer_block.ff_block.W3.copy_(weights['ffn.w3.weight'])
 
 
     return transformer_block(in_features)
@@ -342,9 +342,9 @@ def init_weights_transformer_block(transformer_block, num_heads, dk, Q, K, V, O,
         transformer_block.attention.WO.copy_(O.T)
         transformer_block.rms1.gains.copy_(RMS1)
         transformer_block.rms2.gains.copy_(RMS2)
-        transformer_block.swiglu.W1.copy_(W1)
-        transformer_block.swiglu.W2.copy_(W2)
-        transformer_block.swiglu.W3.copy_(W3)
+        transformer_block.ff_block.W1.copy_(W1)
+        transformer_block.ff_block.W2.copy_(W2)
+        transformer_block.ff_block.W3.copy_(W3)
 
 
 def run_transformer_lm(

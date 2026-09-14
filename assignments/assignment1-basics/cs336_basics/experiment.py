@@ -23,7 +23,7 @@ from typing import Any
 from cs336_basics.training import training_loop
 from cs336_basics.tokenizer import Tokenizer
 from cs336_basics.metrics import metric_logger
-from cs336_basics.run_io import atomic_json
+from cs336_basics.run_io import atomic_json, atomic_save
 from cs336_basics.git_metadata import read_git_metadata
 
 
@@ -532,12 +532,17 @@ def run_experiment(resolved, *, resume_from=None, stop_after=None, verbose=True)
                 resume_from=resume_from, stop_after=stop_after, verbose=verbose,
                 tok=tok, log_metrics=log_metrics, should_stop=should_stop,
             )
+            completed = result["last_metric"]["step"] == training_config["steps"]
+            if completed:
+                # Full model for direct torch.load(..., weights_only=False).
+                # Numbered checkpoints retain optimizer/RNG state for resuming.
+                atomic_save(result["model"], output / "model.pt")
         # Close W&B before reporting success. The handler stays active during
         # cleanup too, so a second Ctrl+C can interrupt a slow shutdown.
         atomic_json({
             **code,
             "run_id": result["run_id"], "last_metric": result["last_metric"],
-            "status": "complete" if result["last_metric"]["step"] == training_config["steps"] else "paused",
+            "status": "complete" if completed else "paused",
         }, output / "summary.json")
     result["output_dir"] = output
     return result

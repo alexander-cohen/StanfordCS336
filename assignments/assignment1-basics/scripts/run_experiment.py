@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from cs336_basics.experiment import CONFIG_FIELDS, ExperimentConfigError, resolve_experiment, run_experiment
 
@@ -66,4 +67,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # sys.argv = [sys.argv[0], "--config", "configs/ablations/rms_post.toml"]
     main()

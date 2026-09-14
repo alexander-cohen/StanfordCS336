@@ -123,9 +123,27 @@ under `CS336_RUNS_ROOT` is the unit of experimental evidence:
 - `metrics.jsonl` contains machine-readable numerical observations keyed by step and tokens seen.
 - `summary.json` records final metrics and complete/paused status. It is absent if execution fails.
 - Checkpoints are written atomically and contain only recovery state plus compact metadata, not the full metric history.
+- Completed `run_experiment` runs also save `model.pt`: the full model object, written
+  atomically. Load it with `torch.load(path, map_location="cpu", weights_only=False)`
+  and call `model.eval()` for inference. This is the final model, not the
+  best-validation checkpoint. Paused runs retain numbered resumable checkpoints but do
+  not produce `model.pt`. Checkpoint retention does not delete this final model file.
+  Full-model loading requires compatible project classes to be importable and uses
+  pickle: only load trusted files with `weights_only=False`. Existing weights-only
+  `model.pt` files are unchanged and still require architecture construction.
 
 Checkpoints include model/optimizer state, completed step, token count, settings, data hashes, and RNG states.
 There is no separate event log, attempt ID, or redundant configuration hash.
+
+Alternatively use `cs336_basics.model_io.load_model(run_dir, device="cpu", weights_only=False)`
+for a trusted full-model file; it needs no configuration file. The helper defaults to
+`weights_only=True` for older state-dictionary files and numbered checkpoints, using
+`config.resolved.json` to construct their architecture and load weights strictly.
+It moves the model to the requested device (e.g. `"cuda"` or `"mps"`) and returns it
+in evaluation mode. Copied runs do not require the original datasets.
+Load the matching tokenizer separately and use `torch.no_grad()` when generating.
+To load weights from a numbered checkpoint, pass `model_ext="160000.pt"` to `load_model`.
+This extracts the checkpoint's model weights without restoring optimizer or RNG state.
 
 ## Where the code lives
 

@@ -57,6 +57,22 @@ def test_run_and_resume_with_validation(tmp_path):
     assert [row["step"] for row in records if "validation_loss" in row] == [2, 4]
     assert json.loads((first["output_dir"] / "summary.json").read_text())["status"] == "paused"
     assert json.loads((resumed["output_dir"] / "summary.json").read_text())["status"] == "complete"
+    assert not (first["output_dir"] / "model.pt").exists()
+    for result in (full, resumed):
+        restored = torch.load(result["output_dir"] / "model.pt", map_location="cpu", weights_only=False)
+        assert isinstance(restored, torch.nn.Module)
+        weights = restored.state_dict()
+        assert weights.keys() == result["model"].state_dict().keys()
+        for name, expected in result["model"].state_dict().items():
+            assert weights[name].device.type == "cpu"
+            torch.testing.assert_close(weights[name], expected.cpu(), rtol=0, atol=0)
+    from cs336_basics.model_io import load_model
+
+    loaded = load_model(full["output_dir"], weights_only=False)
+    assert not loaded.training
+    inputs = torch.tensor([[1, 2, 3, 4]])
+    with torch.no_grad():
+        torch.testing.assert_close(loaded(inputs), full["model"](inputs), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("missing_when", ["resolve", "launch"])
@@ -125,7 +141,7 @@ def test_retention_and_console_validation(tmp_path, capsys):
     resolved["checkpoint"].update(every_steps=1, keep_last=2)
     result = run_experiment(resolved)
     output = result["output_dir"]
-    assert sorted(path.name for path in output.glob("*.pt")) == ["3.pt", "4.pt"]
+    assert sorted(path.name for path in output.glob("*.pt")) == ["3.pt", "4.pt", "model.pt"]
     captured = capsys.readouterr()
     assert "| val " in captured.err
     assert "Sample (step " in captured.err
