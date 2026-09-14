@@ -29,7 +29,7 @@ tiny_stories_valid = '/Users/alexandercohen/Local Documents/data/tinystories/Tin
 tiny_stories_valid_tokd = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-valid_tokd.npy'
 tiny_stories_train = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train.txt'
 tiny_stories_train_tokd = '/Users/alexandercohen/Local Documents/data/tinystories/TinyStoriesV2-GPT4-train_tokd.npy'
-test_corpus = """/Users/alexandercohen/Documents/Research After 2025/Stanford CS336/CS336-Spring-2026/assignments/assignment1-basics/text/test_corpus.txt"""
+test_corpus = """/Users/alexandercohen/Developer/CS336-Spring-2026/assignments/assignment1-basics/text/test_corpus.txt"""
 owt_train = """/Users/alexandercohen/Local Documents/data/owt_train.txt"""
 owt_train_tokd = """/Users/alexandercohen/Local Documents/data/owt_train_tokd.npy"""
 owt_train_tokd_prepend = """/Users/alexandercohen/Local Documents/data/owt_train_tokd"""
@@ -79,7 +79,6 @@ def do_merge(
     pair_freqs: dict[tuple[bytes, bytes], int],
     max_key: tuple[bytes, bytes], 
     verbose = False) -> dict[tuple[bytes,...], int]:
-
 
     new_tok = max_key[0] + max_key[1]
     pair_freqs[max_key] = 0

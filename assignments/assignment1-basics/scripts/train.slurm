@@ -22,8 +22,6 @@ fi
 : "${SCRATCH:?Torch must provide SCRATCH, or set it before submission}"
 export PATH="$HOME/.local/bin:$PATH"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$SCRATCH/uv-cache}"
-export CS336_DATA_ROOT="${CS336_DATA_ROOT:-$SCRATCH/data}"
-export CS336_RUNS_ROOT="${CS336_RUNS_ROOT:-$SCRATCH/runs/cs336}"
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
 

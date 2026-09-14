@@ -1,8 +1,9 @@
-# Copy this file to configs/local.toml and replace the placeholders.
+# Optional overrides: copy to configs/local.toml and uncomment the paths you need.
+# Defaults are assignment1-basics/data and assignment1-basics/runs.
 # configs/local.toml is ignored by Git because these paths are machine-specific.
 
-[data]
-root = "/absolute/path/to/data"
+# [data]
+# root = "/absolute/path/to/data"
 
-[runs]
-root = "/absolute/path/to/runs/cs336"
+# [runs]
+# root = "/absolute/path/to/runs/cs336"

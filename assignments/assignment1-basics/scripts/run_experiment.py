@@ -14,8 +14,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="configs/local.toml",
         help="Machine-local path configuration relative to the project root.",
     )
-    parser.add_argument("--data-root", help="Override CS336_DATA_ROOT and configs/local.toml.")
-    parser.add_argument("--runs-root", help="Override CS336_RUNS_ROOT and configs/local.toml.")
+    parser.add_argument("--data-root", help="Override the data root (default: assignment1-basics/data; also configurable via CS336_DATA_ROOT or configs/local.toml).")
+    parser.add_argument("--runs-root", help="Override the runs root (default: assignment1-basics/runs; also configurable via CS336_RUNS_ROOT or configs/local.toml).")
     parser.add_argument("--device", choices=("auto", "cpu", "mps", "cuda"), help="Override runtime.device.")
     parser.add_argument("--resume-from", help="Checkpoint to continue in a new attempt directory.")
     parser.add_argument("--stop-after", type=int, help="Stop at this absolute step without changing the full budget.")

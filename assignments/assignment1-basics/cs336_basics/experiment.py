@@ -192,6 +192,7 @@ def _resolve_root(
     command_line_value: str | None,
     environment: Mapping[str, str],
     local_config: Mapping[str, Any],
+    root: Path,
 ) -> ResolvedRoot:
     environment_name = ROOT_ENVIRONMENT_VARIABLES[name]
 
@@ -203,13 +204,12 @@ def _resolve_root(
         source = f"environment:{environment_name}"
     else:
         local_table = local_config.get(name)
-        if not isinstance(local_table, dict) or not local_table.get("root"):
-            raise ExperimentConfigError(
-                f"Missing {name} root. Pass --{name}-root, set {environment_name}, "
-                f"or define [{name}].root in configs/local.toml"
-            )
-        raw_value = local_table["root"]
-        source = "local_config"
+        if isinstance(local_table, dict) and "root" in local_table:
+            raw_value = local_table["root"]
+            source = "local_config"
+        else:
+            raw_value = str(root / name)
+            source = "default"
 
     if not isinstance(raw_value, str) or not raw_value.strip():
         raise ExperimentConfigError(f"The resolved {name} root must be a non-empty string")
@@ -266,12 +266,14 @@ def resolve_experiment(
         command_line_value=data_root_override,
         environment=environment,
         local_config=local_config,
+        root=root,
     )
     runs_root = _resolve_root(
         name="runs",
         command_line_value=runs_root_override,
         environment=environment,
         local_config=local_config,
+        root=root,
     )
 
     resolved = copy.deepcopy(config)

@@ -29,7 +29,7 @@ rope_theta = 10000.0
 [training]
 batch_size = 8
 # Specify steps OR total_tokens; tokens per step = batch_size * context_length (token budgets round up to whole steps).
-steps = 100
+steps = 4
 grad_clip = 1.0
 # lr_mode = "basic" OR "cosine_scheduled"
 # if lr_mode == basic, include learning_rate

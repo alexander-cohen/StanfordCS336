@@ -132,6 +132,30 @@ def test_local_config_resolves_without_creating_runs_directory(tmp_path: Path) -
     assert not runs_root.exists()
 
 
+def test_default_roots_are_relative_to_project_not_cwd(tmp_path, monkeypatch):
+    data_root, _, preset = make_project(tmp_path)
+    data_root.rename(tmp_path / "data")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    resolved = resolve_experiment(preset, environment={}, root=tmp_path)
+    assert resolved["resolved_paths"]["data_root"] == str(tmp_path / "data")
+    assert resolved["resolved_paths"]["runs_root"] == str(tmp_path / "runs")
+    assert resolved["provenance"]["data_root_source"] == "default"
+    assert resolved["provenance"]["runs_root_source"] == "default"
+    assert not (tmp_path / "runs").exists()
+
+
+def test_partial_local_config_keeps_other_root_default(tmp_path):
+    data_root, _, preset = make_project(tmp_path)
+    (tmp_path / "configs" / "local.toml").write_text(f'[data]\nroot = "{data_root}"\n')
+    resolved = resolve_experiment(preset, environment={}, root=tmp_path)
+    assert resolved["resolved_paths"]["data_root"] == str(data_root)
+    assert resolved["provenance"]["data_root_source"] == "local_config"
+    assert resolved["resolved_paths"]["runs_root"] == str(tmp_path / "runs")
+    assert resolved["provenance"]["runs_root_source"] == "default"
+
+
 @pytest.mark.parametrize("mode", ["basic", "cosine_scheduled"])
 def test_resolved_training_schedule(tmp_path, mode):
     from cs336_basics.training import learning_rate_at

@@ -16,7 +16,12 @@ disk. Weights & Biases is an optional view of the same configuration and metrics
 
 ## Machine-specific roots
 
-Two environment variables locate large, machine-specific files:
+By default, inputs live in `assignment1-basics/data` and run artifacts in
+`assignment1-basics/runs`, independent of the current working directory. Put the expected
+dataset files in `data/` before training; run directories are created when a run starts.
+Both locations are ignored by Git. No local configuration file is required.
+
+Two optional environment variables override these locations:
 
 - `CS336_DATA_ROOT`: raw and tokenized datasets.
 - `CS336_RUNS_ROOT`: run directories, checkpoints, logs, and generated summaries.
@@ -28,11 +33,11 @@ export CS336_DATA_ROOT="/path/to/data"
 export CS336_RUNS_ROOT="/path/to/runs/cs336"
 ```
 
-These absolute paths must not appear in committed experiment presets. A one-off command-line override may supersede
-an environment variable. For local convenience, the resolver also reads the ignored `configs/local.toml`; copy
-`configs/local.example.toml` to create it on a new machine. The resulting absolute paths and their sources must be
-captured in the resolved run configuration. The program should fail clearly when a required root or input file is
-missing rather than silently writing into the repository.
+These absolute overrides must not appear in committed experiment presets. The precedence is
+`--data-root` / `--runs-root`, then environment variables, then the corresponding entry in the
+optional ignored `configs/local.toml`, then the project-local default. Existing `local.toml`
+entries continue to override the defaults; remove an entry to use its default. Resolved paths
+and their sources are captured in the run configuration. Missing input files fail validation.
 
 A local `data` symlink is optional for browsing. Training must not require it, and `/data` is ignored by Git.
 
@@ -54,7 +59,8 @@ Configuration precedence is:
 2. explicit command-line overrides;
 3. machine roots from command-line arguments;
 4. machine roots from `CS336_DATA_ROOT` and `CS336_RUNS_ROOT`;
-5. machine roots from the ignored `configs/local.toml`.
+5. machine roots from the ignored `configs/local.toml`;
+6. project-local `data/` and `runs/` defaults.
 
 Before training, these sources are validated and materialized as one `config.resolved.json`. No implicit configuration
 should remain after that point.
@@ -218,8 +224,8 @@ uv run wandb login
 my_slurm_accounts
 ```
 
-Copy the tokenized train and validation arrays into `$SCRATCH/data/tinystories/`. Tokenizer artifacts
-are tracked in Git. The batch script defaults to `$SCRATCH/data` and `$SCRATCH/runs/cs336`;
+Copy the tokenized train and validation arrays into `assignment1-basics/data/tinystories/`.
+Tokenizer artifacts are tracked in Git. The batch script uses the same project-local defaults;
 export `CS336_DATA_ROOT` and `CS336_RUNS_ROOT` before submission to override these paths.
 Use an account returned by `my_slurm_accounts` in place of `YOUR_SLURM_ACCOUNT` below.
 
