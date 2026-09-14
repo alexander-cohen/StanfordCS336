@@ -15,8 +15,9 @@ import cs336_basics.transformer as transformer
 import cs336_basics.decode as decode
 from tests.conftest import vocab_size
 import hashlib
+import json
 import uuid
-from cs336_basics.run_io import atomic_save, capture_rng, restore_rng, resume_settings
+from cs336_basics.run_io import atomic_json, atomic_save, capture_rng, restore_rng, resume_settings
 from cs336_basics.metrics import format_metrics, memory_metrics
 import sys
 import textwrap
@@ -266,6 +267,7 @@ def training_loop(
         weight_decay=training_params.get("weight_decay", 0.0),
     )
     start_step, tokens_seen, elapsed_before = 0, 0, 0.0
+    total_eval_seconds, total_checkpoint_seconds = 0.0, 0.0
     # Identifies the logical experiment across launches: new for fresh training,
     # but inherited from the checkpoint when continuing an existing run.
     run_id = uuid.uuid4().hex
@@ -287,6 +289,18 @@ def training_loop(
         opt.load_state_dict(saved["optimizer"])
         tokens_seen, elapsed_before = saved["tokens_seen"], saved["elapsed_seconds"]
         run_id = saved["run_id"]  # Link this continuation to the original run.
+        total_eval_seconds = saved.get("total_eval_seconds", 0.0)
+        total_checkpoint_seconds = saved.get("total_checkpoint_seconds", 0.0)
+        # A checkpoint cannot contain the duration of its own completed write.
+        # Its optional sidecar supplies that final timing without rewriting weights.
+        timing_path = Path(resume_from).with_suffix(".timing.json")
+        if timing_path.exists():
+            timing = json.loads(timing_path.read_text())
+            if timing["run_id"] != run_id or timing["step"] != start_step:
+                raise ValueError("Checkpoint timing metadata does not match checkpoint")
+            total_eval_seconds = timing["total_eval_seconds"]
+            total_checkpoint_seconds = timing["total_checkpoint_seconds"]
+            elapsed_before = timing["elapsed_seconds"]
         # Model construction consumes randomness. Restore AFTER constructing/loading.
         restore_rng(saved["rng"])
 
@@ -351,6 +365,7 @@ def training_loop(
         final_step = step == end_step or stopping
         evaluate = validation_data is not None and (step % eval_every == 0 or final_step)
         if evaluate:
+            eval_started = time.perf_counter()
             # Use repeatable validation batches, without advancing the
             # Python/PyTorch generators that determine future training.
             rng = capture_rng(device)
@@ -369,10 +384,54 @@ def training_loop(
             finally:
                 model.train()
                 restore_rng(rng)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            elif device.type == "mps":
+                torch.mps.synchronize()
+            last_metric["eval_seconds"] = time.perf_counter() - eval_started
+            total_eval_seconds += last_metric["eval_seconds"]
             # Include evaluation time in this record and saved elapsed time.
             elapsed = elapsed_before + time.perf_counter() - started
             last_metric["elapsed_seconds"] = elapsed
-        if step % log_every == 0 or final_step or evaluate:
+        if step % checkpoint_every == 0 or final_step:
+            if output is not None:
+                # History lives in JSONL; only continuation state goes here.
+                destination = output / f"{step}.pt"
+                if destination.exists():
+                    raise FileExistsError(f"Refusing to overwrite checkpoint: {destination}")
+                checkpoint_started = time.perf_counter()
+                save_checkpoint(model, opt, step, destination, other_dat={
+                    "format_version": CHECKPOINT_FORMAT_VERSION, "run_id": run_id,
+                    "tokens_seen": tokens_seen, "elapsed_seconds": elapsed,
+                    "total_eval_seconds": total_eval_seconds,
+                    "total_checkpoint_seconds": total_checkpoint_seconds,
+                    "configuration": configuration,
+                    "data_identity": data_identity, "rng": capture_rng(device),
+                })
+                last_metric["checkpoint_seconds"] = time.perf_counter() - checkpoint_started
+                total_checkpoint_seconds += last_metric["checkpoint_seconds"]
+                atomic_json({
+                    "run_id": run_id, "step": step,
+                    "total_eval_seconds": total_eval_seconds,
+                    "total_checkpoint_seconds": total_checkpoint_seconds,
+                    "elapsed_seconds": elapsed_before + time.perf_counter() - started,
+                }, destination.with_suffix(".timing.json"))
+                saved_paths.append(destination)
+                # Delete old checkpoints only AFTER the replacement saves.
+                # The parent checkpoint of a resumed attempt is untouched.
+                if keep_last is not None:
+                    while len(saved_paths) > keep_last:
+                        expired = saved_paths[0]
+                        expired.unlink()
+                        expired.with_suffix(".timing.json").unlink(missing_ok=True)
+                        saved_paths.pop(0)
+        last_metric.update({
+            "total_eval_seconds": total_eval_seconds,
+            "total_checkpoint_seconds": total_checkpoint_seconds,
+            "elapsed_seconds": elapsed_before + time.perf_counter() - started,
+        })
+        # Emit checkpoint timings at their step even when logging cadences differ.
+        if step % log_every == 0 or final_step or evaluate or "checkpoint_seconds" in last_metric:
             last_metric.update(memory_metrics(device))
             if interval_seconds > 0:
                 # Interval averages, not cumulative rates. Same approximate 6N
@@ -385,42 +444,21 @@ def training_loop(
                 print(format_metrics(last_metric, training_params["steps"]), file=sys.stderr, flush=True)
             interval_seconds = 0.0
             interval_tokens = 0
-
-        if step % checkpoint_every == 0 or final_step:
-            if output is not None:
-                # History lives in JSONL; only continuation state goes here.
-                destination = output / f"{step}.pt"
-                if destination.exists():
-                    raise FileExistsError(f"Refusing to overwrite checkpoint: {destination}")
-                save_checkpoint(model, opt, step, destination, other_dat={
-                    "format_version": CHECKPOINT_FORMAT_VERSION, "run_id": run_id,
-                    "tokens_seen": tokens_seen, "elapsed_seconds": elapsed,
-                    "configuration": configuration,
-                    "data_identity": data_identity, "rng": capture_rng(device),
-                })
-                saved_paths.append(destination)
-                # Delete old checkpoints only AFTER the replacement saves.
-                # The parent checkpoint of a resumed attempt is untouched.
-                if keep_last is not None:
-                    while len(saved_paths) > keep_last:
-                        expired = saved_paths[0]
-                        expired.unlink()
-                        saved_paths.pop(0)
-            if tok is not None and not stopping:
-                # Sampling must not change subsequent training randomness.
-                rng = capture_rng(device)
-                model.eval()
-                try:
-                    with torch.no_grad():
-                        sample = tok.decode(decode.decode(
-                            model, tok, prompt or "My good friend Agustin said:", 20, temperature=0.3))
-                    if verbose:
-                        print(f"\n  Sample (step {step:,}):\n" + textwrap.fill(
-                            sample, width=100, initial_indent="    ", subsequent_indent="    "
-                        ) + "\n", file=sys.stderr, flush=True)
-                finally:
-                    model.train()
-                    restore_rng(rng)
+        if (step % checkpoint_every == 0 or final_step) and tok is not None and not stopping:
+            # Sampling must not change subsequent training randomness.
+            rng = capture_rng(device)
+            model.eval()
+            try:
+                with torch.no_grad():
+                    sample = tok.decode(decode.decode(
+                        model, tok, prompt or "My good friend Agustin said:", 20, temperature=0.3))
+                if verbose:
+                    print(f"\n  Sample (step {step:,}):\n" + textwrap.fill(
+                        sample, width=100, initial_indent="    ", subsequent_indent="    "
+                    ) + "\n", file=sys.stderr, flush=True)
+            finally:
+                model.train()
+                restore_rng(rng)
         if stopping:
             break
     return {"model": model, "optimizer": opt, "last_metric": last_metric, "run_id": run_id}

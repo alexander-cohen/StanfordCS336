@@ -1,0 +1,43 @@
+# Run commands from the assignment1-basics directory.
+# Register once:
+#   uv run wandb sweep --project cs336-assignment1 configs/wandb_lr_sweep.example.yaml
+# Then run an agent INSIDE a Slurm GPU allocation (one trial per agent):
+#   srun uv run --no-sync wandb agent --count 1 ENTITY/cs336-assignment1/SWEEP_ID
+# The existing train.slurm launches training directly; it does not launch an agent.
+# Additional agents using the same sweep ID receive additional trials.
+
+name: tinystories-constant-lr-grid
+description: One base TOML with five constant learning-rate overrides.
+project: cs336-assignment1
+program: scripts/run_experiment.py
+method: grid
+
+metric:
+  name: validation_loss
+  goal: minimize
+
+# Dotted parameter names become CLI overrides; fixed settings come from one TOML.
+parameters:
+  training.learning_rate:
+    values: [0.1, 0.01, 0.001, 0.0001, 0.00001]
+
+# Each trial runs as a separate process using the prepared project environment.
+# ${args} expands to --training.learning_rate=<selected-value>.
+command:
+  - uv
+  - run
+  - --no-sync
+  - python
+  - -m
+  - scripts.run_experiment
+  - --config
+  - configs/basic_lr_sweep/lr1e-3.toml
+  - --experiment.name
+  - tinystories-constant-lr-sweep
+  - --device
+  - cuda
+  - ${args}
+
+# Each trial uses the full budget in the base TOML; count=1 is not a time limit.
+# Choose a Slurm time limit that accommodates a trial. This example does not
+# implement automatic checkpoint resumption when a Slurm job reaches its limit.

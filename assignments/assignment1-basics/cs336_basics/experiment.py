@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 import tomllib
 import random
@@ -32,6 +33,37 @@ ROOT_ENVIRONMENT_VARIABLES = {
     "runs": "CS336_RUNS_ROOT",
 }
 
+# All input fields, including optional schedule/budget fields absent from a preset.
+# Derived paths, provenance, and metrics are outputs, not configurable inputs.
+CONFIG_FIELDS = {
+    "schema_version": int,
+    **{f"experiment.{key}": kind for key, kind in {
+        "name": str, "seed": int, "tags": list,
+    }.items()},
+    **{f"data.{key}": str for key in ("name", "version", "train_file", "validation_file")},
+    **{f"tokenizer.{key}": str for key in ("vocab_file", "merges_file", "end_of_text")},
+    **{f"model.{key}": int for key in (
+        "vocab_size", "context_length", "num_heads", "num_layers", "d_model", "d_ff",
+    )},
+    "model.rope_theta": float,
+    **{f"training.{key}": int for key in (
+        "batch_size", "steps", "total_tokens", "warmup_steps", "anneal_steps",
+    )},
+    **{f"training.{key}": float for key in (
+        "grad_clip", "learning_rate", "lr_max", "lr_min", "epsilon", "weight_decay",
+    )},
+    "training.lr_mode": str,
+    "training.betas": list,
+    "evaluation.every_steps": int,
+    "evaluation.batches": int,
+    "logging.every_steps": int,
+    "checkpoint.every_steps": int,
+    "checkpoint.keep_last": int,
+    "runtime.device": str,
+    "tracking.wandb_mode": str,
+    "tracking.wandb_project": str,
+}
+
 
 class ExperimentConfigError(ValueError):
     """Raised when an experiment configuration cannot be resolved safely."""
@@ -59,6 +91,50 @@ def _load_toml(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ExperimentConfigError(f"Expected a TOML table at the top level of {path}")
     return value
+
+
+def _apply_overrides(config, overrides):
+    applied = {}
+    for key, raw in overrides.items():
+        if key not in CONFIG_FIELDS:
+            raise ExperimentConfigError(f"Unknown configuration override: {key}")
+        kind = CONFIG_FIELDS[key]
+        if kind is str:
+            value = raw
+        else:
+            try:
+                parsed = tomllib.loads(f"value = {raw}")
+                if set(parsed) != {"value"}:
+                    raise ValueError("Expected one value")
+                value = parsed["value"]
+                # Reject dates, non-finite floats, and other non-JSON metadata.
+                json.dumps(value, allow_nan=False)
+            except (ValueError, TypeError) as error:
+                raise ExperimentConfigError(f"Invalid value for {key}: {raw!r}") from error
+            valid_type = (
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                if kind is float else type(value) is kind
+            )
+            if not valid_type:
+                raise ExperimentConfigError(f"Expected {key} to be {kind.__name__}, got {raw!r}")
+        applied[key] = value
+
+    budget_keys = {"training.steps", "training.total_tokens"} & applied.keys()
+    if len(budget_keys) == 2:
+        raise ExperimentConfigError("Override exactly one of training.steps or training.total_tokens")
+    if budget_keys:
+        other = "total_tokens" if "training.steps" in budget_keys else "steps"
+        config.setdefault("training", {}).pop(other, None)
+    for key, value in applied.items():
+        if "." in key:
+            section, field = key.split(".", 1)
+            table = config.setdefault(section, {})
+            if not isinstance(table, dict):
+                raise ExperimentConfigError(f"Expected a [{section}] table")
+            table[field] = value
+        else:
+            config[key] = value
+    return applied
 
 
 def _path_relative_to(base: Path, value: str | os.PathLike[str]) -> Path:
@@ -252,6 +328,7 @@ def resolve_experiment(
     data_root_override: str | None = None,
     runs_root_override: str | None = None,
     device_override: str | None = None,
+    overrides: Mapping[str, str] | None = None,
     environment: Mapping[str, str] | None = None,
     root: Path | None = None,
 ) -> dict[str, Any]:
@@ -261,6 +338,12 @@ def resolve_experiment(
     environment = os.environ if environment is None else environment
 
     config = _load_toml(config_path)
+    raw_overrides = dict(overrides or {})
+    if device_override is not None:
+        if "runtime.device" in raw_overrides and raw_overrides["runtime.device"] != device_override:
+            raise ExperimentConfigError("Conflicting --device and runtime.device overrides")
+        raw_overrides["runtime.device"] = device_override
+    applied_overrides = _apply_overrides(config, raw_overrides)
     _validate_preset(config)
     local_config = _load_optional_local_config(local_config_path)
 
@@ -292,12 +375,6 @@ def resolve_experiment(
         "steps": training["steps"],
         "actual_total_tokens": training["steps"] * tokens_per_update,
     }
-    runtime = resolved["runtime"]
-    if device_override is not None:
-        if device_override not in {"auto", "cpu", "mps", "cuda"}:
-            raise ExperimentConfigError("--device must be one of: auto, cpu, mps, cuda")
-        runtime["device"] = device_override
-
     data = resolved["data"]
     tokenizer = resolved["tokenizer"]
     train_path = _resolve_relative_file(data_root.path, data["train_file"], "data.train_file")
@@ -331,7 +408,8 @@ def resolve_experiment(
         "local_config": str(local_config_path) if local_config_path.exists() else None,
         "data_root_source": data_root.source,
         "runs_root_source": runs_root.source,
-        "device_source": "command_line" if device_override is not None else "preset",
+        "device_source": "command_line" if "runtime.device" in applied_overrides else "preset",
+        "cli_overrides": applied_overrides,
     }
     resolved["input_metadata"] = {
         "train_data_size_bytes": train_path.stat().st_size,

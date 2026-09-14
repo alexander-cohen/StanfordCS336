@@ -1,4 +1,5 @@
 import io
+import json
 import random
 
 import numpy as np
@@ -129,7 +130,7 @@ def test_cadence_final_checkpoint_and_no_overwrite(tmp_path):
     records = []
     training.training_loop(data, model_config, train_config, tmp_path / "run", verbose=False,
                            checkpoint_every=2, log_every=3, log_metrics=records.append)
-    assert [record["step"] for record in records] == [3, 4]
+    assert [record["step"] for record in records] == [2, 3, 4]
     assert (tmp_path / "run" / "4.pt").is_file()
     with pytest.raises(FileExistsError):
         training.training_loop(data, model_config, train_config, tmp_path / "run", verbose=False, checkpoint_every=2)
@@ -169,8 +170,70 @@ def test_throughput_excludes_nontraining_work(tmp_path, monkeypatch, log_every):
     params = sum(p.numel() for p in result["model"].parameters())
     for record in records:
         assert record["memory_process_rss_bytes"] > 0
+        assert record["checkpoint_seconds"] == 1001
+        assert record["total_checkpoint_seconds"] == 1001 * record["step"]
+        assert record["total_eval_seconds"] == 1001 * (record["step"] // 2)
+        if record["step"] % 2 == 0:
+            assert record["eval_seconds"] == 1001
+        else:
+            assert "eval_seconds" not in record
         if record["step"] == 1:
             assert "estimated_train_flops_per_second" not in record
         else:
             assert record["train_tokens_per_second"] == 8
             assert record["estimated_train_flops_per_second"] == pytest.approx(6 * params * 8)
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_timing_totals_resume_and_retention(tmp_path, monkeypatch, legacy):
+    # Only simulated evaluation and save operations advance the clock.
+    clock = [0.0]
+    monkeypatch.setattr(training.time, "perf_counter", lambda: clock[0])
+    data = np.arange(64) % 16
+    validation = data.copy()
+    original_batch, original_save = training.get_batch, training.save_checkpoint
+
+    def batch(source, *args):
+        if source is validation:
+            clock[0] += 3
+        return original_batch(source, *args)
+
+    def save(*args, **kwargs):
+        result = original_save(*args, **kwargs)
+        clock[0] += 7
+        return result
+
+    monkeypatch.setattr(training, "get_batch", batch)
+    monkeypatch.setattr(training, "save_checkpoint", save)
+    model_config, train_config = configs()
+    first = training.training_loop(
+        data, model_config, train_config, tmp_path / "first", verbose=False,
+        validation_data=validation, eval_every=1, eval_batches=2,
+        checkpoint_every=1, keep_last=1, stop_after=2,
+    )
+    checkpoint = tmp_path / "first" / "2.pt"
+    timing_path = checkpoint.with_suffix(".timing.json")
+    timing = json.loads(timing_path.read_text())
+    assert timing["total_eval_seconds"] == 12
+    assert timing["total_checkpoint_seconds"] == 14
+    assert first["last_metric"]["elapsed_seconds"] == 26
+    assert sorted(p.name for p in checkpoint.parent.iterdir()) == ["2.pt", "2.timing.json"]
+    if legacy:
+        saved = torch.load(checkpoint, weights_only=True)
+        saved.pop("total_eval_seconds")
+        saved.pop("total_checkpoint_seconds")
+        torch.save(saved, checkpoint)
+        timing_path.unlink()
+    clock[0] += 10000  # Downtime must not enter resumed elapsed time.
+    resumed = training.training_loop(
+        data, model_config, train_config, tmp_path / "resumed", verbose=False,
+        validation_data=validation, eval_every=1, eval_batches=2,
+        checkpoint_every=1, keep_last=1, resume_from=checkpoint,
+    )
+    final = resumed["last_metric"]
+    assert final["total_eval_seconds"] == (12 if legacy else 24)
+    assert final["total_checkpoint_seconds"] == (14 if legacy else 28)
+    if not legacy:
+        assert final["elapsed_seconds"] == 52
+    assert checkpoint.exists()  # Parent attempt is retained.
+    assert sorted(p.name for p in (tmp_path / "resumed").iterdir()) == ["4.pt", "4.timing.json"]

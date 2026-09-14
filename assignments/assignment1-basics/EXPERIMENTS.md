@@ -66,6 +66,37 @@ Configuration precedence is:
 Before training, these sources are validated and materialized as one `config.resolved.json`. No implicit configuration
 should remain after that point.
 
+### CLI overrides and W&B sweeps
+
+Every preset field has a matching CLI flag, for example `--training.learning_rate=0.003`,
+`--model.d_model=512`, or `--evaluation.batches=32`. Both `--section.key VALUE` and
+`--section.key=VALUE` work. Strings are ordinary shell arguments; quote spaces as usual.
+Quote an entire array argument, e.g. `--training.betas '[0.9, 0.95]'` or
+`--experiment.tags '["lr-sweep", "gpu"]'`. Unknown flags and invalid types are errors.
+Repeated flags use the last value; `--device` is an alias for `--runtime.device`.
+Machine roots still use `--data-root` and `--runs-root`.
+
+Overrides apply before validation, file resolution, and token-budget calculations. They are
+recorded in `provenance.cli_overrides`, and the effective values are saved in the resolved
+config, checkpoints, and W&B configuration. Changing `training.steps` replaces a preset's
+`training.total_tokens`, and vice versa; specifying both on the CLI is an error.
+Optional fields can be supplied even when absent from the preset, so switching learning-rate
+mode also allows supplying the corresponding schedule fields. Resume compatibility still
+checks the resulting scientific settings. Generated metadata is not an override target.
+
+Preview an overridden run without training:
+
+```sh
+uv run python -m scripts.run_experiment --config configs/basic_lr_sweep/lr1e-3.toml \
+  --training.learning_rate=0.003 --training.batch_size=16 \
+  --evaluation.batches=32 --checkpoint.every_steps=200 --dry-run
+```
+
+`configs/wandb_lr_sweep.example.yaml` uses one base TOML and sweeps the numeric
+`training.learning_rate` parameter. W&B expands `${args}` into these same dotted CLI flags.
+The example includes registration and agent commands; the agent must run inside a GPU
+allocation. The existing `train.slurm` runs a single training process, not a sweep agent.
+
 ## Run directory contract
 
 Presets require exactly one positive integer: `training.steps` or `training.total_tokens`.
@@ -143,6 +174,23 @@ record. Timing includes batching and optimizer work but excludes evaluation, sam
 and logging. Accelerators synchronize at the timing boundaries. The first update of each launch is
 excluded as warmup; a record with no timed updates omits these rates. FLOP/s uses the same approximate
 6N FLOPs/token estimate. Short smoke runs are not reliable hardware benchmarks.
+
+`eval_seconds` measures each complete evaluation (including batching and RNG/mode restoration).
+`checkpoint_seconds` measures each checkpoint save, including serialization, flushing/fsync, and
+atomic replacement, but excluding retention cleanup, timing metadata, and text sampling.
+Both appear in JSONL, W&B, and console output on steps where that operation happens.
+Checkpoint steps emit a metric record even when they fall outside the regular logging cadence.
+`total_eval_seconds` and `total_checkpoint_seconds` are cumulative totals on every record.
+Training throughput still excludes both operations. `elapsed_seconds` includes all wall time
+since loop entry through evaluation/checkpointing at the recorded step, excluding setup and downtime.
+The current step's logging and subsequent text sampling appear in later elapsed readings.
+
+Each checkpoint has a small `<step>.timing.json` companion, written atomically after the save,
+because a checkpoint cannot record the completed duration of its own write. Copy this file with
+the checkpoint to preserve the complete timing totals on resume. Retention removes both together.
+Without the companion, resume uses totals embedded in the checkpoint, which omit that checkpoint's
+own save duration; older checkpoints without timing fields start the new totals at zero.
+Timing metadata writes and retention cleanup are excluded from the checkpoint total.
 
 ## Research notes
 

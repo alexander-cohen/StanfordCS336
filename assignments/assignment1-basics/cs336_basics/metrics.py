@@ -52,6 +52,11 @@ def format_metrics(record, total_steps=None):
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     memory = ""
+    timing = ""
+    if "eval_seconds" in record:
+        timing += f" | eval {record['eval_seconds']:.2f}s"
+    if "checkpoint_seconds" in record:
+        timing += f" | checkpoint {record['checkpoint_seconds']:.2f}s"
     gib = 1024**3
     if "memory_process_rss_bytes" in record:
         memory += f" | RAM RSS {record['memory_process_rss_bytes'] / gib:.2f} GiB"
@@ -74,7 +79,7 @@ def format_metrics(record, total_steps=None):
     return (
         f"step {step:>11} | loss {record['train_loss']:7.4f} | val {validation:>7} | "
         f"lr {record.get('learning_rate', 0):.2e} | tok/s {rate:>9} | "
-        f"est. FLOP/s {flops_per_second:>7} | {hours:02}:{minutes:02}:{seconds:02}{memory}"
+        f"est. FLOP/s {flops_per_second:>7} | {hours:02}:{minutes:02}:{seconds:02}{timing}{memory}"
     )
 
 
