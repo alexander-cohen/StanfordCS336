@@ -3,6 +3,7 @@ schema_version = 1 # version of TOML structure
 [experiment]
 name = "tinystories-small-basic-lre-1"
 seed = 1337
+tags=["lr_sweep"]
 
 [data]
 name = "tinystories"
