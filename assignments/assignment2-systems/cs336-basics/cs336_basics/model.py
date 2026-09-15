@@ -192,6 +192,7 @@ class BasicsTransformerLM(nn.Module):
             k: v for k, v in locals().items() if k != "self" and not (k.startswith("__") and k.endswith("__"))
         }
         super().__init__()
+        self.vocab_size = vocab_size
         self.context_length = context_length
         self.d_model = d_model
         self.token_embeddings = Embedding(vocab_size, d_model)

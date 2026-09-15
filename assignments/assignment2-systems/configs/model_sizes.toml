@@ -1,0 +1,35 @@
+[reused]
+vocab_size = 10000
+rope_theta = 10000.0
+context_length = 512
+device = "auto"
+
+[small]
+num_heads = 12
+num_layers = 12
+d_model = 768
+d_ff = 3072
+
+[medium]
+num_heads = 16
+num_layers = 24
+d_model = 1024
+d_ff = 4096
+
+[large]
+num_heads = 20
+num_layers = 36
+d_model = 1280
+d_ff = 5120
+
+[xl]
+num_heads = 32
+num_layers = 32
+d_model = 2560
+d_ff = 10240
+
+[10B]
+num_heads = 36
+num_layers = 50
+d_model = 4608
+d_ff = 12288
