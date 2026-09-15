@@ -6,7 +6,7 @@
 # The existing train.slurm launches training directly; it does not launch an agent.
 # Additional agents using the same sweep ID receive additional trials.
 
-name: tinystories-weight_decay-grid
+name: tinystories-weight_decay-cosine
 description: One base TOML with five constant learning-rate overrides.
 project: cs336-assignment1
 program: scripts/run_experiment.py
@@ -33,7 +33,7 @@ command:
   - -m
   - scripts.run_experiment
   - --config
-  - configs/weight_decay_sweep.toml
+  - configs/weight_decay_cosine_sweep.toml
   - --device
   - cuda
   - ${args}
