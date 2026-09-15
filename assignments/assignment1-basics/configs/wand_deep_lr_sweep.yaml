@@ -6,7 +6,7 @@
 # The existing train.slurm launches training directly; it does not launch an agent.
 # Additional agents using the same sweep ID receive additional trials.
 
-name: tinystories-lr-sweep-deep
+name: tinystories-lr-sweep-deep-small-model
 description: One base TOML with five constant learning-rate overrides.
 project: cs336-assignment1
 program: scripts/run_experiment.py
@@ -33,7 +33,7 @@ command:
   - -m
   - scripts.run_experiment
   - --config
-  - configs/deep_lr_sweep.toml
+  - configs/deep_lr_sweep_small_model.toml
   - --device
   - cuda
   - ${args}
