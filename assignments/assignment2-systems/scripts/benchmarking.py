@@ -111,16 +111,29 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
         raise ValueError("Unexpected mode:", mode)
     
 
+def main():
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--mode", type=str, help="Mode: train, encode, decode, test_compr, or encode_and_serialize, or none", default="none")
+    # parser.add_argument("--corpus", type=str, help="filepath OR ts_valid OR ts_train OR owt_valid OR owt_train OR test_corpus", default="none")
+    # parser.add_argument("--vocab_size", type=int, help="Size of vocab for training", default="257")
+    # parser.add_argument("--cores", type=int, help="Number of cores for pretokenization", default="8")
+    # parser.add_argument("--verbose", action="store_true", help="Increase output verbosity")
+    # parser.add_argument("--use_disk", action="store_true", help="Store frequency table to disk (so big corpus doesn't crash memory)")
+    # parser.add_argument("--num_pieces", type=int, help="Number of pieces to chunk the text into", default=8)
+    
+    # args = parser.parse_args()
+    batch_size = 4
+    warmup = 10
+    num_iters = 10
+    device = "cuda" if torch.cuda.is_available() else (
+                "mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device(device)
 
-batch_size = 4
-warmup = 10
-num_iters = 10
-device = "cuda" if torch.cuda.is_available() else (
-            "mps" if torch.backends.mps.is_available() else "cpu")
-device = torch.device(device)
+    for config in ["small", "medium", "large", "xl", "10B"]:
+        model = init_model(config, device)
+        for type in ["forward", "backward", "train"]:
+            time_per_pass = benchmark(model, batch_size=batch_size, mode=type, warmup_iters=warmup, num_iters=num_iters)
+            print(f"{config} model, num_params = {model.get_num_params()}, device = {device.type}, warmup = {warmup}, time/{type} = {time_per_pass:.3f}s")
 
-for config in ["small", "medium", "large", "xl"]:
-    model = init_model(config, device)
-    for type in ["forward", "backward", "train"]:
-        time_per_pass = benchmark(model, batch_size=batch_size, mode=type, warmup_iters=warmup, num_iters=num_iters)
-        print(f"{config} model, num_params = {model.get_num_params()}, device = {device.type}, warmup = {warmup}, time/{type} = {time_per_pass:.2f}")
+if __name__ == "__main__":
+    main()
