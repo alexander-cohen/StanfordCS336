@@ -8,6 +8,7 @@ import time
 import socket
 import subprocess
 import numpy as np
+import argparse
 ## Write a script to perform end-to-end benchmarking of forward pass, backward pass, and optimizer step
 
 basic_configs = []
