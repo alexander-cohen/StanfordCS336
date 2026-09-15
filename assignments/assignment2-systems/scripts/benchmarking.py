@@ -5,6 +5,7 @@ from typing import Literal
 import torch
 import time
 import socket
+import subprocess
 ## Write a script to perform end-to-end benchmarking of forward pass, backward pass, and optimizer step
 
 basic_configs = []
@@ -135,6 +136,12 @@ def main():
 
     for i in range(torch.cuda.device_count()):
         print(f"cuda:{i}: {torch.cuda.get_device_name(i)}")
+
+    commit = subprocess.check_output(
+      ["git", "rev-parse", "HEAD"], text=True
+    ).strip()
+
+    print(f"Git commit: {commit}", flush=True)
 
     for config in ["small", "medium", "large", "xl", "10B"]:
         model = init_model(config, device)
