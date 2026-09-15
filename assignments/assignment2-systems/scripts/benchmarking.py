@@ -4,6 +4,7 @@ import cs336_basics.optimizer
 from typing import Literal
 import torch
 import time
+import socket
 ## Write a script to perform end-to-end benchmarking of forward pass, backward pass, and optimizer step
 
 basic_configs = []
@@ -128,6 +129,12 @@ def main():
     device = "cuda" if torch.cuda.is_available() else (
                 "mps" if torch.backends.mps.is_available() else "cpu")
     device = torch.device(device)
+
+    print("Host:", socket.gethostname())
+    print("CUDA available:", torch.cuda.is_available())
+
+    for i in range(torch.cuda.device_count()):
+        print(f"cuda:{i}: {torch.cuda.get_device_name(i)}")
 
     for config in ["small", "medium", "large", "xl", "10B"]:
         model = init_model(config, device)
