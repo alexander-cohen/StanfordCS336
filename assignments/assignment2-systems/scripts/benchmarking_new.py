@@ -10,6 +10,10 @@ import socket
 import subprocess
 import numpy as np
 import argparse
+from contextlib import redirect_stdout, redirect_stderr
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 ## Write a script to perform end-to-end benchmarking of forward pass, backward pass, and optimizer step
 
 basic_configs = []
@@ -75,11 +79,11 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
     else:
         model.train()
 
-    def step():
+    def step(sync=True):
         data = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
         target = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
 
-        torch_sync(device)
+        if sync: torch_sync(device)
         start_time = time.perf_counter()
         if mode == "forward":
             model(data)
@@ -92,12 +96,12 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
             opt.step()
         else:
             raise ValueError("Unexpected mode:", mode)
-        torch_sync(device)
+        if sync: torch_sync(device)
         end_time = time.perf_counter()
         return end_time - start_time
 
     for j in range(warmup_iters):
-        step()
+        step(sync=False)
 
     times = [step() for j in range(num_iters)]
     return np.array(times)
@@ -165,13 +169,25 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--bench_iter", type=int, default=10)
-    parser.add_argument("--config", type=str, help="small|medium|large|xl|10B", default="small")
+    parser.add_argument("--model_size", type=str, help="small|medium|large|xl|10B", default="small")
     parser.add_argument("--mode", type=str, help="forward|backward|train|all", default="all")
+    parser.add_argument("--log-dir", type=Path, default=Path("logs"), help="Parent directory for run logs")
 
     for k, v in MODEL_ARGS_DEFAULTS.items():
-        parser.add_argument(f"--{k}", type = type(v), default=v)
+        parser.add_argument(f"--{k}", type = type(v), default=None)
     
     args = parser.parse_args()
+    run_id = f"{datetime.now(timezone.utc):%Y%m%d_%H%M%S_UTC}_{uuid4().hex}"
+    run_dir = args.log_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=False)
+    log_path = run_dir / "run.log"
+    print(f"Writing benchmark output to {log_path.resolve()}", flush=True)
+    with log_path.open("w", buffering=1) as log_file:
+        with redirect_stdout(log_file), redirect_stderr(log_file):
+            run_benchmarks(args)
+
+
+def run_benchmarks(args):
     batch_size = args.batch_size
     warmup = args.warmup
     num_iters = args.bench_iter
@@ -181,7 +197,7 @@ def main():
     else:
         modes = [args.mode]
 
-    model, model_config = init_model(args.config, **{k: getattr(args, k) for k in MODEL_ARGS_DEFAULTS},)
+    model, model_config = init_model(args.model_size, **{k: getattr(args, k) for k in MODEL_ARGS_DEFAULTS if getattr(args, k) is not None},)
     device = next(model.parameters()).device
     
     print("Host:", socket.gethostname())
@@ -199,12 +215,11 @@ def main():
     print("Device:", device.type)
     print("Warmup iters:", warmup)
     print("Benchmark iters:", num_iters)
-    print("Model type:", args.config)
+    print("Model size:", args.model_size)
     print("Model config:")
     pprint.pp(model_config)
     print("Num params:", model.get_num_params())
     print("Batch size:", batch_size)
-    print("Context len:", context_length)
     
     
     for mode in modes:
