@@ -10,7 +10,7 @@ import socket
 import subprocess
 import numpy as np
 import argparse
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import nullcontext, redirect_stdout, redirect_stderr
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -26,6 +26,11 @@ for (k, v) in basic_configs["reused"].items():
 
 for (k, v) in basic_configs["small"].items():
     MODEL_ARGS_DEFAULTS[k] = v
+
+
+def nvtx_range(name):
+    # CPU/MPS-only PyTorch builds do not provide NVTX.
+    return torch.cuda.nvtx.range(name) if torch.cuda.is_available() else nullcontext()
 
 
 def torch_sync(device):
@@ -71,8 +76,9 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
     # data = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
     # target = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
 
-    opt = cs336_basics.optimizer.AdamW(model.parameters())
-    opt.zero_grad()
+    with nvtx_range("optimizer_setup"):
+        opt = cs336_basics.optimizer.AdamW(model.parameters())
+        opt.zero_grad()
 
     if mode == "forward":
         model.eval()
@@ -80,30 +86,51 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
         model.train()
 
     def step(sync=True):
-        data = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
-        target = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
+        with nvtx_range("generate_batch"):
+            data = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
+            target = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
 
-        if sync: torch_sync(device)
+        if sync:
+            with nvtx_range("sync_before_step"):
+                torch_sync(device)
         start_time = time.perf_counter()
         if mode == "forward":
-            model(data)
+            with nvtx_range("forward"):
+                model(data)
         elif mode == "backward":
-            loss = cs336_basics.nn_utils.cross_entropy(model(data), target)
-            loss.backward()
+            with nvtx_range("forward"):
+                logits = model(data)
+            with nvtx_range("cross_entropy"):
+                loss = cs336_basics.nn_utils.cross_entropy(logits, target)
+            with nvtx_range("backward"):
+                loss.backward()
         elif mode == "train":
-            loss = cs336_basics.nn_utils.cross_entropy(model(data), target)
-            loss.backward()
-            opt.step()
+            with nvtx_range("forward"):
+                logits = model(data)
+            with nvtx_range("cross_entropy"):
+                loss = cs336_basics.nn_utils.cross_entropy(logits, target)
+            with nvtx_range("backward"):
+                loss.backward()
+            with nvtx_range("optimizer_step"):
+                opt.step()
         else:
             raise ValueError("Unexpected mode:", mode)
-        if sync: torch_sync(device)
+        if sync:
+            with nvtx_range("sync_after_step"):
+                torch_sync(device)
         end_time = time.perf_counter()
         return end_time - start_time
 
-    for j in range(warmup_iters):
-        step(sync=False)
+    with nvtx_range("warmup"):
+        for j in range(warmup_iters):
+            with nvtx_range(f"warmup_iteration_{j}"):
+                step(sync=False)
 
-    times = [step() for j in range(num_iters)]
+    with nvtx_range("measurement"):
+        times = []
+        for j in range(num_iters):
+            with nvtx_range(f"measured_iteration_{j}"):
+                times.append(step())
     return np.array(times)
     
     # if mode == "forward":
@@ -197,7 +224,8 @@ def run_benchmarks(args):
     else:
         modes = [args.mode]
 
-    model, model_config = init_model(args.model_size, **{k: getattr(args, k) for k in MODEL_ARGS_DEFAULTS if getattr(args, k) is not None},)
+    with nvtx_range("model_setup"):
+        model, model_config = init_model(args.model_size, **{k: getattr(args, k) for k in MODEL_ARGS_DEFAULTS if getattr(args, k) is not None},)
     device = next(model.parameters()).device
     
     print("Host:", socket.gethostname())
@@ -223,7 +251,8 @@ def run_benchmarks(args):
     
     
     for mode in modes:
-        times = benchmark(model, batch_size=batch_size, mode=mode, warmup_iters=warmup, num_iters=num_iters)
+        with nvtx_range(f"benchmark_{mode}"):
+            times = benchmark(model, batch_size=batch_size, mode=mode, warmup_iters=warmup, num_iters=num_iters)
         print(f"mean time/{mode} = {np.mean(times):.3f}s, std = {np.std(times):.3f}s")
 
 if __name__ == "__main__":
