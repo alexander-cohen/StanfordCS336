@@ -4,7 +4,6 @@
       --pytorch=functions-trace,autograd-shapes-nvtx \
       --cudabacktrace=all \
       --python-backtrace=cuda \
-      --gpu-metrics-devices=0 \
       --output="profiles/benchmark_$(date +%Y%m%d_%H%M%S)" \
       uv run python scripts/benchmarking_new.py \
         --model_size small \
