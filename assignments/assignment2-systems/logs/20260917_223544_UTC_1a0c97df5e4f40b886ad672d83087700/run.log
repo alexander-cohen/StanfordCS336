@@ -1,0 +1,20 @@
+Host: gl002.hpc.nyu.edu
+CUDA available: True
+cuda:0: NVIDIA L40S
+Git commit: 995aae82e4a807d0be0d93e35a6096f86dad4b11
+Device: cuda
+Warmup iters: 5
+Benchmark iters: 10
+Model size: xl
+Model config:
+{'vocab_size': 10000,
+ 'rope_theta': 10000.0,
+ 'context_length': 512,
+ 'device': 'auto',
+ 'num_heads': 32,
+ 'num_layers': 32,
+ 'd_model': 2560,
+ 'd_ff': 10240}
+Num params: 3406809600
+Batch size: 4
+mean time/forward = 0.555s, std = 0.001s
