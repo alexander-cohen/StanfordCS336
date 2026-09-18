@@ -17,6 +17,7 @@ import einx
 from einops import einsum, rearrange
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+import os
 ## Write a script to perform end-to-end benchmarking of forward pass, backward pass, and optimizer step
 
 basic_configs = []
@@ -249,6 +250,7 @@ def main():
     parser.add_argument("--bench_iter", type=int, default=10)
     parser.add_argument("--model_size", type=str, help="small|medium|large|xl|10B", default="small")
     parser.add_argument("--mode", type=str, help="forward|backward|train|all", default="all")
+    parser.add_argument("--out_dir", type=str, help="output dir for profiling", default="benchmark")
 
     for k, v in MODEL_ARGS_DEFAULTS.items():
         parser.add_argument(f"--{k}", type = type(v), default=None)
@@ -261,11 +263,12 @@ def run_benchmarks(args):
     batch_size = args.batch_size
     warmup = args.warmup
     num_iters = args.bench_iter
-    context_length = args.context_length
     if args.mode == "all":
         modes = ["forward", "backward", "train"]
     else:
         modes = [args.mode]
+
+    torch.cuda.memory._record_memory_history(max_entries=1000000)
 
     with nvtx_range("model_setup"):
         model, model_config = init_model(args.model_size, **{k: getattr(args, k) for k in MODEL_ARGS_DEFAULTS if getattr(args, k) is not None},)
@@ -297,6 +300,8 @@ def run_benchmarks(args):
         with nvtx_range(f"benchmark_{mode}"):
             times = benchmark(model, batch_size=batch_size, mode=mode, warmup_iters=warmup, num_iters=num_iters)
         print(f"mean time/{mode} = {np.mean(times):.3f}s, std = {np.std(times):.3f}s")
+
+    torch.cuda.memory._dump_snapshot(f"{args.out_dir}_memory_snapshot.pickle")
 
 if __name__ == "__main__":
     main()

@@ -6,6 +6,7 @@
 #SBATCH --mem=32G
 #SBATCH --time=00:30:00
 #SBATCH --output=profile-%A_%a.log
+#SBATCH --partition=l40s_public
 
 set -euo pipefail
 
