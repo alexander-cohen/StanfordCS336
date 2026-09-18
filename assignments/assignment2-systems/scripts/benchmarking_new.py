@@ -1,8 +1,10 @@
 import pprint
 import gc
+import math
 import tomllib
 import cs336_basics.model
 import cs336_basics.optimizer
+from cs336_basics.nn_utils import softmax
 from typing import Literal
 import torch
 import time
@@ -10,10 +12,11 @@ import socket
 import subprocess
 import numpy as np
 import argparse
-from contextlib import nullcontext, redirect_stdout, redirect_stderr
-from datetime import datetime, timezone
-from pathlib import Path
-from uuid import uuid4
+from contextlib import nullcontext
+import einx
+from einops import einsum, rearrange
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
 ## Write a script to perform end-to-end benchmarking of forward pass, backward pass, and optimizer step
 
 basic_configs = []
@@ -27,11 +30,53 @@ for (k, v) in basic_configs["reused"].items():
 for (k, v) in basic_configs["small"].items():
     MODEL_ARGS_DEFAULTS[k] = v
 
-
 def nvtx_range(name):
     # CPU/MPS-only PyTorch builds do not provide NVTX.
     return torch.cuda.nvtx.range(name) if torch.cuda.is_available() else nullcontext()
 
+@torch.cuda.nvtx.range("scaled dot product attention")
+def annotated_scaled_dot_product_attention(
+    Q: Float[Tensor, " ... queries d_k"],
+    K: Float[Tensor, " ... keys    d_k"],
+    V: Float[Tensor, " ... keys    d_v"],
+    mask: Bool[Tensor, " ... queries keys"] | None = None,
+) -> Float[Tensor, " ... queries d_v"]:
+    """Scaled dot-product attention.
+
+    This function implements Eq. 1 of the Transformer paper.
+
+    Args:
+        Q: Tensor of queries, may have any number of leading dimensions.
+        K: Tensor of keys, sharing leading dimensions with Q.
+        V: Tensor of values, sharding leading dimensions with Q and K.
+        mask: An (optional) mask of shape (..., seq_len, seq_len).
+            Attention scores for positions with a mask value of `False` should
+            be masked out, i.e., not affect the softmaxed attention probabilities.
+
+    Returns:
+        torch.FloatTensor of shape (..., seq_len, value_dimension)
+        with the output of running your scaled dot product attention
+        implementation with the provided key, query, and value tensors.
+    """
+
+    d_k = K.shape[-1]
+    with nvtx_range("computing attention scores"):
+        attention_scores = einsum(Q, K, "... query d_k, ... key d_k -> ... query key") / math.sqrt(d_k)
+
+        if mask is not None:
+            attention_scores = torch.where(mask, attention_scores, float("-inf"))
+
+    with nvtx_range("computing softmax"):
+        attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
+
+
+    with nvtx_range("final matmul"):
+        res = einsum(attention_weights, V, "... query key, ... key d_v ->  ... query d_v")
+
+    return res
+
+
+cs336_basics.model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
 
 def torch_sync(device):
     if device.type == "cuda":
@@ -86,6 +131,10 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
         model.train()
 
     def step(sync=True):
+        if mode in ("backward", "train"):
+            with nvtx_range("zero_grad"):
+                opt.zero_grad(set_to_none=True)
+
         with nvtx_range("generate_batch"):
             data = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
             target = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
@@ -125,6 +174,8 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
         for j in range(warmup_iters):
             with nvtx_range(f"warmup_iteration_{j}"):
                 step(sync=False)
+
+    torch_sync(device)
 
     with nvtx_range("measurement"):
         times = []
@@ -198,20 +249,12 @@ def main():
     parser.add_argument("--bench_iter", type=int, default=10)
     parser.add_argument("--model_size", type=str, help="small|medium|large|xl|10B", default="small")
     parser.add_argument("--mode", type=str, help="forward|backward|train|all", default="all")
-    parser.add_argument("--log-dir", type=Path, default=Path("logs"), help="Parent directory for run logs")
 
     for k, v in MODEL_ARGS_DEFAULTS.items():
         parser.add_argument(f"--{k}", type = type(v), default=None)
     
     args = parser.parse_args()
-    run_id = f"{datetime.now(timezone.utc):%Y%m%d_%H%M%S_UTC}_{uuid4().hex}"
-    run_dir = args.log_dir / run_id
-    run_dir.mkdir(parents=True, exist_ok=False)
-    log_path = run_dir / "run.log"
-    print(f"Writing benchmark output to {log_path.resolve()}", flush=True)
-    with log_path.open("w", buffering=1) as log_file:
-        with redirect_stdout(log_file), redirect_stderr(log_file):
-            run_benchmarks(args)
+    run_benchmarks(args)
 
 
 def run_benchmarks(args):
