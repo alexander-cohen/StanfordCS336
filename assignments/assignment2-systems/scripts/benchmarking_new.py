@@ -99,11 +99,13 @@ def init_model(size_option: Literal["small", "medium", "large", "xl", "10B"] = "
     for (k, v) in kwargs.items():
         model_config[k] = v
 
-    if model_config.get("device", "auto") == "auto":
+    if device is None:
+        device = model_config.get("device", "auto")
+    if str(device) == "auto":
         device = "cuda" if torch.cuda.is_available() else (
             "mps" if torch.backends.mps.is_available() else "cpu")
-    else: 
-        device = model_config["device"]
+    device = torch.device(device)
+    model_config["device"] = str(device)
 
     model = cs336_basics.model.BasicsTransformerLM(
         vocab_size = model_config["vocab_size"],
@@ -116,8 +118,10 @@ def init_model(size_option: Literal["small", "medium", "large", "xl", "10B"] = "
     model.to(device)
     return model, model_config
 
-def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] = "forward", num_iters = 10, warmup_iters = 10):
+def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] = "forward", num_iters = 10, warmup_iters = 10, autocast = False):
     device = next(model.parameters()).device
+    if mode not in ("forward", "backward", "train"):
+        raise ValueError("Unexpected mode:", mode)
 
     # data = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
     # target = torch.randint(model.vocab_size, (batch_size, model.context_length), device=device)
@@ -144,27 +148,34 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
             with nvtx_range("sync_before_step"):
                 torch_sync(device)
         start_time = time.perf_counter()
-        if mode == "forward":
-            with nvtx_range("forward"):
-                model(data)
-        elif mode == "backward":
-            with nvtx_range("forward"):
-                logits = model(data)
-            with nvtx_range("cross_entropy"):
-                loss = cs336_basics.nn_utils.cross_entropy(logits, target)
+        cast = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if device.type == "cuda" and autocast
+            else nullcontext()
+        )
+        with cast:
+            if mode == "forward":
+                with nvtx_range("forward"):
+                    model(data)
+            else:
+                with nvtx_range("forward"):
+                    logits = model(data)
+                with nvtx_range("cross_entropy"):
+                    loss = cs336_basics.nn_utils.cross_entropy(logits, target)
+
+        if mode == "backward":
+            # Exclude the forward pass and loss, including queued GPU work.
+            if sync:
+                with nvtx_range("sync_before_backward"):
+                    torch_sync(device)
+            start_time = time.perf_counter()
+
+        if mode in ("backward", "train"):
             with nvtx_range("backward"):
                 loss.backward()
-        elif mode == "train":
-            with nvtx_range("forward"):
-                logits = model(data)
-            with nvtx_range("cross_entropy"):
-                loss = cs336_basics.nn_utils.cross_entropy(logits, target)
-            with nvtx_range("backward"):
-                loss.backward()
+        if mode == "train":
             with nvtx_range("optimizer_step"):
                 opt.step()
-        else:
-            raise ValueError("Unexpected mode:", mode)
         if sync:
             with nvtx_range("sync_after_step"):
                 torch_sync(device)
@@ -185,63 +196,6 @@ def benchmark(model, batch_size, mode: Literal["forward", "backward", "train"] =
                 times.append(step())
     return np.array(times)
     
-    # if mode == "forward":
-    #     model.eval()
-    #     for j in range(warmup_iters):
-    #         model(data)
-
-    #     torch_sync(device)
-    #     start_time = time.perf_counter()
-    #     for j in range(warmup_iters, warmup_iters+num_iters):
-    #         model(data)
-    #     torch_sync(device)
-    #     end_time = time.perf_counter()
-    #     tot_time = end_time - start_time
-    #     time_per_pass = tot_time / num_iters
-    #     return time_per_pass
-
-    # elif mode == "backward":
-    #     model.train()
-    #     for j in range(warmup_iters):
-    #         loss = cs336_basics.nn_utils.cross_entropy(model(data), target)
-    #         loss.backward()
-
-
-    #     torch_sync(device)
-    #     start_time = time.perf_counter()
-    #     for j in range(warmup_iters, warmup_iters+num_iters):
-    #         loss = cs336_basics.nn_utils.cross_entropy(model(data), target)
-    #         loss.backward()
-    #     torch_sync(device)
-    #     end_time = time.perf_counter()
-    #     tot_time = end_time - start_time
-    #     time_per_fb_pass = tot_time / num_iters
-    #     return time_per_fb_pass
-
-    # elif mode == "train":
-    #     model.train()
-    #     opt = cs336_basics.optimizer.AdamW(model.parameters())
-    #     opt.zero_grad()
-
-    #     for j in range(warmup_iters):
-    #         loss = cs336_basics.nn_utils.cross_entropy(model(data), target)
-    #         loss.backward()
-    #         opt.step()
-
-    #     torch_sync(device)
-    #     start_time = time.perf_counter()
-    #     for j in range(warmup_iters, warmup_iters+num_iters):
-    #         loss = cs336_basics.nn_utils.cross_entropy(model(data), target)
-    #         loss.backward()
-    #         opt.step()
-    #     torch_sync(device)
-    #     end_time = time.perf_counter()
-    #     tot_time = end_time - start_time
-    #     time_per_train = tot_time / num_iters
-    #     return time_per_train
-    # else:
-    #     raise ValueError("Unexpected mode:", mode)
-    
 
 def main():
     parser = argparse.ArgumentParser()
@@ -251,6 +205,9 @@ def main():
     parser.add_argument("--model_size", type=str, help="small|medium|large|xl|10B", default="small")
     parser.add_argument("--mode", type=str, help="forward|backward|train|all", default="all")
     parser.add_argument("--out_dir", type=str, help="output dir for profiling", default="benchmark")
+    parser.add_argument('--mixed_precision', action='store_true')
+    parser.add_argument('--profile_memory', action='store_true')
+
 
     for k, v in MODEL_ARGS_DEFAULTS.items():
         parser.add_argument(f"--{k}", type = type(v), default=None)
@@ -268,7 +225,8 @@ def run_benchmarks(args):
     else:
         modes = [args.mode]
 
-    torch.cuda.memory._record_memory_history(max_entries=1000000)
+    if args.profile_memory:
+        torch.cuda.memory._record_memory_history(max_entries=1000000)
 
     with nvtx_range("model_setup"):
         model, model_config = init_model(args.model_size, **{k: getattr(args, k) for k in MODEL_ARGS_DEFAULTS if getattr(args, k) is not None},)
@@ -287,6 +245,7 @@ def run_benchmarks(args):
 
     print("Git commit:", commit)
     print("Device:", device.type)
+    print("Precision:", "BF16 autocast" if args.mixed_precision and device.type == "cuda" else "FP32")
     print("Warmup iters:", warmup)
     print("Benchmark iters:", num_iters)
     print("Model size:", args.model_size)
@@ -298,11 +257,12 @@ def run_benchmarks(args):
     
     for mode in modes:
         with nvtx_range(f"benchmark_{mode}"):
-            times = benchmark(model, batch_size=batch_size, mode=mode, warmup_iters=warmup, num_iters=num_iters)
+            times = benchmark(model, batch_size=batch_size, mode=mode, warmup_iters=warmup, num_iters=num_iters, autocast=args.mixed_precision)
         print(f"mean time/{mode} = {np.mean(times):.3f}s, std = {np.std(times):.3f}s")
 
-    torch.cuda.memory._dump_snapshot(f"{args.out_dir}_memory_snapshot.pickle")
-    torch.cuda.memory._record_memory_history(enabled=None)
+    if args.profile_memory:
+        torch.cuda.memory._dump_snapshot(f"{args.out_dir}_memory_snapshot.pickle")
+        torch.cuda.memory._record_memory_history(enabled=None)
 
 if __name__ == "__main__":
     main()

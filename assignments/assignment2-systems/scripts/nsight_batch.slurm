@@ -41,4 +41,5 @@ srun nsys profile \
     --mode "$mode" \
     --warmup 5 \
     --bench_iter 10 \
-    --output_dir "$output"
+    --out_dir "$output" \
+    --mixed_precision
