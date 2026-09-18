@@ -1,0 +1,72 @@
+Host: gl051.hpc.nyu.edu
+CUDA available: True
+cuda:0: NVIDIA L40S
+Git commit: c59e179e96fdda8f3492778d2509e7d8b38820c4
+Device: cuda
+Precision: FP32
+Warmup iters: 5
+Benchmark iters: 10
+Model size: large
+Model config:
+{'vocab_size': 10000,
+ 'rope_theta': 10000.0,
+ 'context_length': 1024,
+ 'device': 'cuda',
+ 'num_heads': 20,
+ 'num_layers': 36,
+ 'd_model': 1280,
+ 'd_ff': 5120}
+Num params: 969411840
+Batch size: 4
+Traceback (most recent call last):
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/scripts/benchmarking_new.py", line 268, in <module>
+    main()
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/scripts/benchmarking_new.py", line 216, in main
+    run_benchmarks(args)
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/scripts/benchmarking_new.py", line 260, in run_benchmarks
+    times = benchmark(model, batch_size=batch_size, mode=mode, warmup_iters=warmup, num_iters=num_iters, autocast=args.mixed_precision)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/scripts/benchmarking_new.py", line 188, in benchmark
+    step(sync=False)
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/scripts/benchmarking_new.py", line 159, in step
+    model(data)
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/cs336-basics/cs336_basics/model.py", line 254, in forward
+    x = layer(x)
+        ^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/cs336-basics/cs336_basics/model.py", line 383, in forward
+    x_attn = self.attn(self.ln1(x))
+             ^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1779, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1790, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/cs336-basics/cs336_basics/model.py", line 521, in forward
+    attn_output = scaled_dot_product_attention(K=K, Q=Q, V=V, mask=causal_mask)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/uv-python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 81, in inner
+    return func(*args, **kwds)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/scripts/benchmarking_new.py", line 71, in annotated_scaled_dot_product_attention
+    attention_weights = softmax(attention_scores, dim=-1)  # Softmax over the key dimension
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/cs336-basics/cs336_basics/nn_utils.py", line 7, in softmax
+    return exponentiated_rescaled_input / torch.sum(exponentiated_rescaled_input, dim=dim, keepdim=True)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 320.00 MiB. GPU 0 has a total capacity of 44.42 GiB of which 234.12 MiB is free. Including non-PyTorch memory, this process has 44.18 GiB memory in use. Of the allocated memory 43.59 GiB is allocated by PyTorch, and 96.59 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+[W918 15:14:19.644062518 unwind.cpp:216] Warning: Unsupported unwinding pattern: unknown op code 0x8 (function unwinderFor)
+srun: error: gl051: task 0: Exited with exit code 1
+srun: Terminating StepId=17955692.0

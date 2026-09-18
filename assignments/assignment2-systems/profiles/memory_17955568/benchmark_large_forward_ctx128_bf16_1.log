@@ -1,0 +1,21 @@
+Host: gl008.hpc.nyu.edu
+CUDA available: True
+cuda:0: NVIDIA L40S
+Git commit: c59e179e96fdda8f3492778d2509e7d8b38820c4
+Device: cuda
+Precision: BF16 autocast
+Warmup iters: 5
+Benchmark iters: 10
+Model size: large
+Model config:
+{'vocab_size': 10000,
+ 'rope_theta': 10000.0,
+ 'context_length': 128,
+ 'device': 'cuda',
+ 'num_heads': 20,
+ 'num_layers': 36,
+ 'd_model': 1280,
+ 'd_ff': 5120}
+Num params: 969411840
+Batch size: 4
+mean time/forward = 0.046s, std = 0.001s
