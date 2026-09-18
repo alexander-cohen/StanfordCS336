@@ -12,7 +12,7 @@ import socket
 import subprocess
 import numpy as np
 import argparse
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import einx
 from einops import einsum, rearrange
 from jaxtyping import Bool, Float, Int
@@ -34,6 +34,35 @@ for (k, v) in basic_configs["small"].items():
 def nvtx_range(name):
     # CPU/MPS-only PyTorch builds do not provide NVTX.
     return torch.cuda.nvtx.range(name) if torch.cuda.is_available() else nullcontext()
+
+@contextmanager
+def annotate_transformer_blocks(model):
+    """Label module boundaries for a diagnostic CUDA trace only."""
+    if next(model.parameters()).device.type != "cuda":
+        raise ValueError("--nvtx_blocks requires a model on CUDA")
+
+    handles = []
+
+    def push_range(label):
+        def hook(module, inputs):
+            torch.cuda.nvtx.range_push(label)
+        return hook
+
+    def pop_range(module, inputs, outputs):
+        torch.cuda.nvtx.range_pop()
+
+    try:
+        for index, block in enumerate(model.layers):
+            handles.extend([
+                block.register_forward_pre_hook(push_range(f"block_{index}/forward")),
+                block.register_forward_hook(pop_range, always_call=True),
+                block.register_full_backward_pre_hook(push_range(f"block_{index}/backward")),
+                block.register_full_backward_hook(pop_range),
+            ])
+        yield
+    finally:
+        for handle in handles:
+            handle.remove()
 
 @torch.cuda.nvtx.range("scaled dot product attention")
 def annotated_scaled_dot_product_attention(
@@ -207,6 +236,8 @@ def main():
     parser.add_argument("--out_dir", type=str, help="output dir for profiling", default="benchmark")
     parser.add_argument('--mixed_precision', action='store_true')
     parser.add_argument('--profile_memory', action='store_true')
+    parser.add_argument('--nvtx_blocks', action='store_true',
+                        help='Add per-block forward/backward NVTX ranges for diagnostic profiling')
 
 
     for k, v in MODEL_ARGS_DEFAULTS.items():
@@ -255,10 +286,12 @@ def run_benchmarks(args):
     print("Batch size:", batch_size)
     
     
-    for mode in modes:
-        with nvtx_range(f"benchmark_{mode}"):
-            times = benchmark(model, batch_size=batch_size, mode=mode, warmup_iters=warmup, num_iters=num_iters, autocast=args.mixed_precision)
-        print(f"mean time/{mode} = {np.mean(times):.3f}s, std = {np.std(times):.3f}s")
+    block_annotations = annotate_transformer_blocks(model) if args.nvtx_blocks else nullcontext()
+    with block_annotations:
+        for mode in modes:
+            with nvtx_range(f"benchmark_{mode}"):
+                times = benchmark(model, batch_size=batch_size, mode=mode, warmup_iters=warmup, num_iters=num_iters, autocast=args.mixed_precision)
+            print(f"mean time/{mode} = {np.mean(times):.3f}s, std = {np.std(times):.3f}s")
 
     if args.profile_memory:
         torch.cuda.memory._dump_snapshot(f"{args.out_dir}_memory_snapshot.pickle")
