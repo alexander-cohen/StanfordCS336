@@ -1,0 +1,27 @@
+Host: gl024.hpc.nyu.edu
+CUDA available: True
+cuda:0: NVIDIA L40S
+Git commit: f644bc7c90a4ff3cfb3e6ef763090af2ca212d8b
+Device: cuda
+Warmup iters: 5
+Benchmark iters: 10
+Model size: large
+Model config:
+{'vocab_size': 10000,
+ 'rope_theta': 10000.0,
+ 'context_length': 512,
+ 'device': 'auto',
+ 'num_heads': 20,
+ 'num_layers': 36,
+ 'd_model': 1280,
+ 'd_ff': 5120}
+Num params: 969411840
+Batch size: 4
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/state/partition1/job-17949123/nsys-report-2793.qdstrm'
+[1/1] [0%                          ] benchmark_large_train_8.nsys-repProcessing events...
+[1/1] [0%                          ] benchmark_large_train_8.nsys-rep[1/1] [14%                         ] benchmark_large_train_8.nsys-rep[1/1] [=15%                        ] benchmark_large_train_8.nsys-rep[1/1] [9%                          ] benchmark_large_train_8.nsys-rep[1/1] [6%                          ] benchmark_large_train_8.nsys-rep[1/1] [5%                          ] benchmark_large_train_8.nsys-rep[1/1] [9%                          ] benchmark_large_train_8.nsys-rep[1/1] [8%                          ] benchmark_large_train_8.nsys-rep[1/1] [12%                         ] benchmark_large_train_8.nsys-rep[1/1] [10%                         ] benchmark_large_train_8.nsys-rep[1/1] [9%                          ] benchmark_large_train_8.nsys-rep[1/1] [8%                          ] benchmark_large_train_8.nsys-rep[1/1] [7%                          ] benchmark_large_train_8.nsys-rep[1/1] [6%                          ] benchmark_large_train_8.nsys-rep[1/1] [5%                          ] benchmark_large_train_8.nsys-rep[1/1] [0%                          ] benchmark_large_train_8.nsys-rep[1/1] [5%                          ] benchmark_large_train_8.nsys-rep[1/1] [6%                          ] benchmark_large_train_8.nsys-rep[1/1] [7%                          ] benchmark_large_train_8.nsys-rep[1/1] [8%                          ] benchmark_large_train_8.nsys-rep[1/1] [9%                          ] benchmark_large_train_8.nsys-rep[1/1] [10%                         ] benchmark_large_train_8.nsys-rep[1/1] [11%                         ] benchmark_large_train_8.nsys-rep[1/1] [12%                         ] benchmark_large_train_8.nsys-rep[1/1] [13%                         ] benchmark_large_train_8.nsys-rep[1/1] [14%                         ] benchmark_large_train_8.nsys-rep[1/1] [=15%                        ] benchmark_large_train_8.nsys-rep[1/1] [=16%                        ] benchmark_large_train_8.nsys-rep[1/1] [=17%                        ] benchmark_large_train_8.nsys-rep[1/1] [==18%                       ] benchmark_large_train_8.nsys-rep[1/1] [==19%                       ] benchmark_large_train_8.nsys-rep[1/1] [==20%                       ] benchmark_large_train_8.nsys-rep[1/1] [==21%                       ] benchmark_large_train_8.nsys-rep[1/1] [===22%                      ] benchmark_large_train_8.nsys-rep[1/1] [===23%                      ] benchmark_large_train_8.nsys-rep[1/1] [===24%                      ] benchmark_large_train_8.nsys-rep[1/1] [====25%                     ] benchmark_large_train_8.nsys-rep[1/1] [====26%                     ] benchmark_large_train_8.nsys-rep[1/1] [====27%                     ] benchmark_large_train_8.nsys-rep[1/1] [====28%                     ] benchmark_large_train_8.nsys-rep[1/1] [=====29%                    ] benchmark_large_train_8.nsys-rep[1/1] [=====30%                    ] benchmark_large_train_8.nsys-rep[1/1] [=====31%                    ] benchmark_large_train_8.nsys-rep[1/1] [=====32%                    ] benchmark_large_train_8.nsys-rep[1/1] [======33%                   ] benchmark_large_train_8.nsys-rep[1/1] [======34%                   ] benchmark_large_train_8.nsys-rep[1/1] [======35%                   ] benchmark_large_train_8.nsys-rep[1/1] [=======36%                  ] benchmark_large_train_8.nsys-rep[1/1] [=======37%                  ] benchmark_large_train_8.nsys-rep[1/1] [=======38%                  ] benchmark_large_train_8.nsys-rep[1/1] [=======39%                  ] benchmark_large_train_8.nsys-rep[1/1] [========40%                 ] benchmark_large_train_8.nsys-rep[1/1] [========41%                 ] benchmark_large_train_8.nsys-rep[1/1] [========42%                 ] benchmark_large_train_8.nsys-rep[1/1] [=========43%                ] benchmark_large_train_8.nsys-rep[1/1] [=========44%                ] benchmark_large_train_8.nsys-rep[1/1] [=========45%                ] benchmark_large_train_8.nsys-rep[1/1] [=========46%                ] benchmark_large_train_8.nsys-rep[1/1] [==========47%               ] benchmark_large_train_8.nsys-rep[1/1] [==========48%               ] benchmark_large_train_8.nsys-rep[1/1] [==========49%               ] benchmark_large_train_8.nsys-rep[1/1] [===========50%              ] benchmark_large_train_8.nsys-rep[1/1] [========================100%] benchmark_large_train_8.nsys-rep[1/1] [========================100%] benchmark_large_train_8.nsys-rep
+mean time/train = 0.708s, std = 0.003s
+Generated:
+	/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/profiles/17949123/benchmark_large_train_8.nsys-rep

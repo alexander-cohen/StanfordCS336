@@ -1,0 +1,27 @@
+Host: gl020.hpc.nyu.edu
+CUDA available: True
+cuda:0: NVIDIA L40S
+Git commit: f644bc7c90a4ff3cfb3e6ef763090af2ca212d8b
+Device: cuda
+Warmup iters: 5
+Benchmark iters: 10
+Model size: small
+Model config:
+{'vocab_size': 10000,
+ 'rope_theta': 10000.0,
+ 'context_length': 512,
+ 'device': 'auto',
+ 'num_heads': 12,
+ 'num_layers': 12,
+ 'd_model': 768,
+ 'd_ff': 3072}
+Num params: 128625408
+Batch size: 4
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/state/partition1/job-17949043/nsys-report-01cf.qdstrm'
+[1/1] [0%                          ] benchmark_small_forward_0.nsys-repProcessing events...
+[1/1] [0%                          ] benchmark_small_forward_0.nsys-rep[1/1] [7%                          ] benchmark_small_forward_0.nsys-rep[1/1] [6%                          ] benchmark_small_forward_0.nsys-rep[1/1] [5%                          ] benchmark_small_forward_0.nsys-rep[1/1] [9%                          ] benchmark_small_forward_0.nsys-rep[1/1] [11%                         ] benchmark_small_forward_0.nsys-rep[1/1] [=17%                        ] benchmark_small_forward_0.nsys-rep[1/1] [===23%                      ] benchmark_small_forward_0.nsys-rep[1/1] [=====29%                    ] benchmark_small_forward_0.nsys-rep[1/1] [======35%                   ] benchmark_small_forward_0.nsys-rep[1/1] [========41%                 ] benchmark_small_forward_0.nsys-rep[1/1] [==========48%               ] benchmark_small_forward_0.nsys-rep[1/1] [===========52%              ] benchmark_small_forward_0.nsys-rep[1/1] [========================100%] benchmark_small_forward_0.nsys-rep[1/1] [========================100%] benchmark_small_forward_0.nsys-rep
+mean time/forward = 0.043s, std = 0.023s
+Generated:
+	/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/profiles/17949043/benchmark_small_forward_0.nsys-rep

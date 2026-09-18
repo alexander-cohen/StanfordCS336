@@ -1,0 +1,27 @@
+Host: gl050.hpc.nyu.edu
+CUDA available: True
+cuda:0: NVIDIA L40S
+Git commit: f644bc7c90a4ff3cfb3e6ef763090af2ca212d8b
+Device: cuda
+Warmup iters: 5
+Benchmark iters: 10
+Model size: medium
+Model config:
+{'vocab_size': 10000,
+ 'rope_theta': 10000.0,
+ 'context_length': 512,
+ 'device': 'auto',
+ 'num_heads': 16,
+ 'num_layers': 24,
+ 'd_model': 1024,
+ 'd_ff': 4096}
+Num params: 423183360
+Batch size: 4
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/state/partition1/job-17949323/nsys-report-91c5.qdstrm'
+[1/1] [0%                          ] benchmark_medium_forward_3.nsys-repProcessing events...
+[1/1] [0%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [==19%                       ] benchmark_medium_forward_3.nsys-rep[1/1] [11%                         ] benchmark_medium_forward_3.nsys-rep[1/1] [8%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [6%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [5%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [9%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [13%                         ] benchmark_medium_forward_3.nsys-rep[1/1] [11%                         ] benchmark_medium_forward_3.nsys-rep[1/1] [10%                         ] benchmark_medium_forward_3.nsys-rep[1/1] [8%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [7%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [6%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [5%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [6%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [9%                          ] benchmark_medium_forward_3.nsys-rep[1/1] [12%                         ] benchmark_medium_forward_3.nsys-rep[1/1] [=15%                        ] benchmark_medium_forward_3.nsys-rep[1/1] [==18%                       ] benchmark_medium_forward_3.nsys-rep[1/1] [==21%                       ] benchmark_medium_forward_3.nsys-rep[1/1] [===24%                      ] benchmark_medium_forward_3.nsys-rep[1/1] [====27%                     ] benchmark_medium_forward_3.nsys-rep[1/1] [=====30%                    ] benchmark_medium_forward_3.nsys-rep[1/1] [======33%                   ] benchmark_medium_forward_3.nsys-rep[1/1] [=======36%                  ] benchmark_medium_forward_3.nsys-rep[1/1] [========40%                 ] benchmark_medium_forward_3.nsys-rep[1/1] [=========43%                ] benchmark_medium_forward_3.nsys-rep[1/1] [==========47%               ] benchmark_medium_forward_3.nsys-rep[1/1] [===========50%              ] benchmark_medium_forward_3.nsys-rep[1/1] [===========51%              ] benchmark_medium_forward_3.nsys-rep[1/1] [========================100%] benchmark_medium_forward_3.nsys-rep[1/1] [========================100%] benchmark_medium_forward_3.nsys-rep
+mean time/forward = 0.110s, std = 0.045s
+Generated:
+	/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/profiles/17949123/benchmark_medium_forward_3.nsys-rep

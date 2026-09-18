@@ -1,0 +1,27 @@
+Host: gl024.hpc.nyu.edu
+CUDA available: True
+cuda:0: NVIDIA L40S
+Git commit: f644bc7c90a4ff3cfb3e6ef763090af2ca212d8b
+Device: cuda
+Warmup iters: 5
+Benchmark iters: 10
+Model size: small
+Model config:
+{'vocab_size': 10000,
+ 'rope_theta': 10000.0,
+ 'context_length': 512,
+ 'device': 'auto',
+ 'num_heads': 12,
+ 'num_layers': 12,
+ 'd_model': 768,
+ 'd_ff': 3072}
+Num params: 128625408
+Batch size: 4
+Capture range started in the application.
+Capture range ended in the application.
+Generating '/state/partition1/job-17949317/nsys-report-d4ea.qdstrm'
+[1/1] [0%                          ] benchmark_small_train_2.nsys-repProcessing events...
+[1/1] [0%                          ] benchmark_small_train_2.nsys-rep[1/1] [11%                         ] benchmark_small_train_2.nsys-rep[1/1] [6%                          ] benchmark_small_train_2.nsys-rep[1/1] [7%                          ] benchmark_small_train_2.nsys-rep[1/1] [11%                         ] benchmark_small_train_2.nsys-rep[1/1] [9%                          ] benchmark_small_train_2.nsys-rep[1/1] [8%                          ] benchmark_small_train_2.nsys-rep[1/1] [7%                          ] benchmark_small_train_2.nsys-rep[1/1] [6%                          ] benchmark_small_train_2.nsys-rep[1/1] [5%                          ] benchmark_small_train_2.nsys-rep[1/1] [5%                          ] benchmark_small_train_2.nsys-rep[1/1] [7%                          ] benchmark_small_train_2.nsys-rep[1/1] [8%                          ] benchmark_small_train_2.nsys-rep[1/1] [10%                         ] benchmark_small_train_2.nsys-rep[1/1] [11%                         ] benchmark_small_train_2.nsys-rep[1/1] [12%                         ] benchmark_small_train_2.nsys-rep[1/1] [14%                         ] benchmark_small_train_2.nsys-rep[1/1] [=15%                        ] benchmark_small_train_2.nsys-rep[1/1] [=17%                        ] benchmark_small_train_2.nsys-rep[1/1] [==18%                       ] benchmark_small_train_2.nsys-rep[1/1] [==20%                       ] benchmark_small_train_2.nsys-rep[1/1] [==21%                       ] benchmark_small_train_2.nsys-rep[1/1] [===23%                      ] benchmark_small_train_2.nsys-rep[1/1] [===24%                      ] benchmark_small_train_2.nsys-rep[1/1] [====25%                     ] benchmark_small_train_2.nsys-rep[1/1] [====27%                     ] benchmark_small_train_2.nsys-rep[1/1] [====28%                     ] benchmark_small_train_2.nsys-rep[1/1] [=====30%                    ] benchmark_small_train_2.nsys-rep[1/1] [=====31%                    ] benchmark_small_train_2.nsys-rep[1/1] [======33%                   ] benchmark_small_train_2.nsys-rep[1/1] [======34%                   ] benchmark_small_train_2.nsys-rep[1/1] [=======36%                  ] benchmark_small_train_2.nsys-rep[1/1] [=======37%                  ] benchmark_small_train_2.nsys-rep[1/1] [=======38%                  ] benchmark_small_train_2.nsys-rep[1/1] [========40%                 ] benchmark_small_train_2.nsys-rep[1/1] [========42%                 ] benchmark_small_train_2.nsys-rep[1/1] [=========44%                ] benchmark_small_train_2.nsys-rep[1/1] [=========45%                ] benchmark_small_train_2.nsys-rep[1/1] [==========47%               ] benchmark_small_train_2.nsys-rep[1/1] [==========49%               ] benchmark_small_train_2.nsys-rep[1/1] [===========50%              ] benchmark_small_train_2.nsys-rep[1/1] [========================100%] benchmark_small_train_2.nsys-rep[1/1] [========================100%] benchmark_small_train_2.nsys-rep
+mean time/train = 0.133s, std = 0.038s
+Generated:
+	/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/profiles/17949123/benchmark_small_train_2.nsys-rep
