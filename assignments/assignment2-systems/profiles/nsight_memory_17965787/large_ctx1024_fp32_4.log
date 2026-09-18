@@ -1,0 +1,26 @@
+Host: gh109.hpc.nyu.edu
+CUDA available: True
+cuda:0: NVIDIA H200
+Git commit: 7130c3b79153dd599d881a976645881674193405
+Device: cuda
+Precision: FP32
+Warmup iters: 1
+Benchmark iters: 1
+Model size: large
+Model config:
+{'vocab_size': 10000,
+ 'rope_theta': 10000.0,
+ 'context_length': 1024,
+ 'device': 'cuda',
+ 'num_heads': 20,
+ 'num_layers': 36,
+ 'd_model': 1280,
+ 'd_ff': 5120}
+Num params: 969411840
+Batch size: 4
+mean time/backward = 2.315s, std = 0.000s
+Collecting data...
+Generating '/state/partition1/job-17965833/nsys-report-b95f.qdstrm'
+[1/1] [0%                          ] large_ctx1024_fp32_4.nsys-rep[1/1] [0%                          ] large_ctx1024_fp32_4.nsys-rep[1/1] [5%                          ] large_ctx1024_fp32_4.nsys-rep[1/1] [6%                          ] large_ctx1024_fp32_4.nsys-rep[1/1] [5%                          ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====29%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [====27%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [====25%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [====28%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====31%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====32%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====30%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====31%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====32%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====30%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====31%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====32%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [======33%                   ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====31%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====29%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [====28%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [====26%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [====25%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [===24%                      ] large_ctx1024_fp32_4.nsys-rep[1/1] [===22%                      ] large_ctx1024_fp32_4.nsys-rep[1/1] [==21%                       ] large_ctx1024_fp32_4.nsys-rep[1/1] [==20%                       ] large_ctx1024_fp32_4.nsys-rep[1/1] [==21%                       ] large_ctx1024_fp32_4.nsys-rep[1/1] [===23%                      ] large_ctx1024_fp32_4.nsys-rep[1/1] [====25%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [====26%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [====27%                     ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====29%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [=====31%                    ] large_ctx1024_fp32_4.nsys-rep[1/1] [======33%                   ] large_ctx1024_fp32_4.nsys-rep[1/1] [======35%                   ] large_ctx1024_fp32_4.nsys-rep[1/1] [=======37%                  ] large_ctx1024_fp32_4.nsys-rep[1/1] [=======39%                  ] large_ctx1024_fp32_4.nsys-rep[1/1] [========41%                 ] large_ctx1024_fp32_4.nsys-rep[1/1] [=========43%                ] large_ctx1024_fp32_4.nsys-rep[1/1] [=========45%                ] large_ctx1024_fp32_4.nsys-rep[1/1] [==========47%               ] large_ctx1024_fp32_4.nsys-rep[1/1] [===========50%              ] large_ctx1024_fp32_4.nsys-rep[1/1] [===========52%              ] large_ctx1024_fp32_4.nsys-rep[1/1] [============54%             ] large_ctx1024_fp32_4.nsys-rep[1/1] [============55%             ] large_ctx1024_fp32_4.nsys-rep[1/1] [============56%             ] large_ctx1024_fp32_4.nsys-rep[1/1] [============57%             ] large_ctx1024_fp32_4.nsys-rep[1/1] [=============58%            ] large_ctx1024_fp32_4.nsys-rep[1/1] [=============59%            ] large_ctx1024_fp32_4.nsys-rep[1/1] [=============60%            ] large_ctx1024_fp32_4.nsys-rep[1/1] [==============61%           ] large_ctx1024_fp32_4.nsys-rep[1/1] [==============62%           ] large_ctx1024_fp32_4.nsys-rep[1/1] [==============63%           ] large_ctx1024_fp32_4.nsys-rep[1/1] [==============64%           ] large_ctx1024_fp32_4.nsys-rep[1/1] [========================100%] large_ctx1024_fp32_4.nsys-rep[1/1] [========================100%] large_ctx1024_fp32_4.nsys-rep
+Generated:
+	/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/profiles/nsight_memory_17965787/large_ctx1024_fp32_4.nsys-rep
