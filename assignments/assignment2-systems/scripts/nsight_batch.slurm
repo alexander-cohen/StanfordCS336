@@ -40,4 +40,5 @@ srun nsys profile \
     --model_size "$model_size" \
     --mode "$mode" \
     --warmup 5 \
-    --bench_iter 10
+    --bench_iter 10 \
+    --output_dir "$output"

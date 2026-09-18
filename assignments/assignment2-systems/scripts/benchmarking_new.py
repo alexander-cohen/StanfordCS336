@@ -302,6 +302,7 @@ def run_benchmarks(args):
         print(f"mean time/{mode} = {np.mean(times):.3f}s, std = {np.std(times):.3f}s")
 
     torch.cuda.memory._dump_snapshot(f"{args.out_dir}_memory_snapshot.pickle")
+    torch.cuda.memory._record_memory_history(enabled=None)
 
 if __name__ == "__main__":
     main()
