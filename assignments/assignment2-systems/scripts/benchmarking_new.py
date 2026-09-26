@@ -42,6 +42,7 @@ def annotate_transformer_blocks(model):
         raise ValueError("--nvtx_blocks requires a model on CUDA")
 
     handles = []
+    backward_ranges = {}
 
     def push_range(label):
         def hook(module, inputs):
@@ -51,18 +52,33 @@ def annotate_transformer_blocks(model):
     def pop_range(module, inputs, outputs):
         torch.cuda.nvtx.range_pop()
 
+    def start_backward_range(label):
+        def hook(module, grad_output):
+            # Autograd also uses NVTX push/pop. A range spanning callbacks
+            # must use an explicit handle so their stacks cannot interfere.
+            range_id = torch.cuda.nvtx.range_start(label)
+            backward_ranges.setdefault(module, []).append(range_id)
+        return hook
+
+    def end_backward_range(module, grad_input, grad_output):
+        torch.cuda.nvtx.range_end(backward_ranges[module].pop())
+
     try:
         for index, block in enumerate(model.layers):
             handles.extend([
                 block.register_forward_pre_hook(push_range(f"block_{index}/forward")),
                 block.register_forward_hook(pop_range, always_call=True),
-                block.register_full_backward_pre_hook(push_range(f"block_{index}/backward")),
-                block.register_full_backward_hook(pop_range),
+                block.register_full_backward_pre_hook(start_backward_range(f"block_{index}/backward")),
+                block.register_full_backward_hook(end_backward_range),
             ])
         yield
     finally:
         for handle in handles:
             handle.remove()
+        # A failed backward may skip its post-hook. Close any remaining ranges.
+        for pending in backward_ranges.values():
+            while pending:
+                torch.cuda.nvtx.range_end(pending.pop())
 
 @torch.cuda.nvtx.range("scaled dot product attention")
 def annotated_scaled_dot_product_attention(

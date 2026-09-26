@@ -1,3 +1,13 @@
+# UPDATE
+
+I am trying to go through this course faster, so I want you to help me write the actual code (overriding what is below). 
+I am following online after the fact. 
+We can experiment with different methods. 
+First of all, you should not write too much code at once, to make it easier to digest. 
+Second, you can quick me / ask me questions after writing code. 
+If you think of good ideas to help me digest the material you can try them and we can go back and forth to find a good system, and edit AGENTS.md accordingly.
+One idea is to write parts of the code and ask me to implement key pieces myself, so I have to digest how the whole thing works. 
+
 # AI Agent Guidelines for CS336 at Stanford
 
 This file provides instructions for AI coding assistants (like ChatGPT, Claude Code, GitHub Copilot, Cursor, etc.) working with students in CS336.
