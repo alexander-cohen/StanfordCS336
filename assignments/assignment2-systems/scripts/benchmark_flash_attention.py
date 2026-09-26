@@ -14,6 +14,7 @@ import json
 
 import torch
 import triton.testing
+from triton.runtime.errors import OutOfResources
 
 from cs336_basics.model import scaled_dot_product_attention
 from scripts.flash_attention import triton_flash_attn
@@ -28,14 +29,18 @@ def _triton(q, k, v, causal_mask, block_size):
     return output
 
 
+def _failure_status(exc):
+    return "resource_limit" if isinstance(exc, OutOfResources) else "oom"
+
+
 def _measure_passes(implementation, q, k, v, causal_mask, grad_output, block_size, warmup, rep):
     forward = lambda: implementation(q, k, v, causal_mask, block_size)
     timings = {}
 
     try:
         timings["forward_ms"] = triton.testing.do_bench(forward, warmup=warmup, rep=rep)
-    except torch.OutOfMemoryError as exc:
-        timings["forward_status"] = "oom"
+    except (torch.OutOfMemoryError, OutOfResources) as exc:
+        timings["forward_status"] = _failure_status(exc)
         timings["forward_error"] = str(exc).splitlines()[0]
         return timings
 
@@ -52,8 +57,8 @@ def _measure_passes(implementation, q, k, v, causal_mask, grad_output, block_siz
             warmup=warmup,
             rep=rep,
         )
-    except torch.OutOfMemoryError as exc:
-        timings["backward_status"] = "oom"
+    except (torch.OutOfMemoryError, OutOfResources) as exc:
+        timings["backward_status"] = _failure_status(exc)
         timings["backward_error"] = str(exc).splitlines()[0]
     finally:
         if "backward_output" in locals():
@@ -72,8 +77,8 @@ def _measure_passes(implementation, q, k, v, causal_mask, grad_output, block_siz
         timings["forward_backward_ms"] = triton.testing.do_bench(
             forward_backward, warmup=warmup, rep=rep
         )
-    except torch.OutOfMemoryError as exc:
-        timings["forward_backward_status"] = "oom"
+    except (torch.OutOfMemoryError, OutOfResources) as exc:
+        timings["forward_backward_status"] = _failure_status(exc)
         timings["forward_backward_error"] = str(exc).splitlines()[0]
     finally:
         del q_grad, k_grad, v_grad
