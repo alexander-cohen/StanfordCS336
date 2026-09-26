@@ -9,7 +9,7 @@ import statistics
 
 def setup(rank, backend, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "29500"
+    os.environ.setdefault("MASTER_PORT", "29500")
     dist.init_process_group(backend, rank=rank, world_size=world_size) # "gloo" for cpu "nccl" for gpu
 
 def distributed_demo(rank, data_size, world_size):
