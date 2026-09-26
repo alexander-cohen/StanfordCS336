@@ -4,33 +4,42 @@ import torch
 
 
 
+def _make_flashattention_test_adapter(implementation: type, backward_math) -> type:
+    class FlashAttentionTestAdapter(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, Q, K, V, is_causal=False):
+            output, lse = implementation.apply(Q, K, V, 32, 64, is_causal)
+            ctx.save_for_backward(Q, K, V, output, lse)
+            ctx.is_causal = is_causal
+            return output
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            Q, K, V, output, lse = ctx.saved_tensors
+            grad_Q, grad_K, grad_V = backward_math(
+                Q, K, V, output, grad_output, lse, ctx.is_causal
+            )
+            return grad_Q, grad_K, grad_V, None
+
+    return FlashAttentionTestAdapter
+
+
 def get_flashattention_autograd_function_pytorch() -> type:
     """
-    Returns a torch.autograd.Function subclass that implements FlashAttention2.
-    The expectation is that this class will implement FlashAttention2
-    using only standard PyTorch operations (no Triton!).
-
-    Returns:
-        A class object (not an instance of the class)
+    Returns the PyTorch FlashAttention autograd function used by the tests.
     """
-    # For example: return MyFlashAttnAutogradFunctionClass
-    raise NotImplementedError
+    from scripts.flash_attention import PytorchFlashAttention, _flash_attention_backward_math
+
+    return _make_flashattention_test_adapter(PytorchFlashAttention, _flash_attention_backward_math)
 
 
 def get_flashattention_autograd_function_triton() -> type:
     """
-    Returns a torch.autograd.Function subclass that implements FlashAttention2
-    using Triton kernels.
-    The expectation is that this class will implement the same operations
-    as the class you return in get_flashattention_autograd_function_pytorch(),
-    but it should do so by invoking custom Triton kernels in the forward
-    and backward passes.
-
-    Returns:
-        A class object (not an instance of the class)
+    Returns the Triton FlashAttention autograd function used by the tests.
     """
-    # For example: return MyTritonFlashAttentionAutogradFunctionClass
-    raise NotImplementedError
+    from scripts.flash_attention import TritonFlashAttention, _flash_attention_backward_math
+
+    return _make_flashattention_test_adapter(TritonFlashAttention, _flash_attention_backward_math)
 
 
 def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
