@@ -12,9 +12,10 @@ import statistics
 
 import torch
 from cs336_basics.model import scaled_dot_product_attention
+compiled_attention = torch.compile(scaled_dot_product_attention)
 
 
-def benchmark(d_head, seq_len, device, batch_size, warmup=10, iterations=100):
+def benchmark(d_head, seq_len, device, batch_size, warmup=10, iterations=100, compiled=False):
     """Keep just one graph live per iteration; never retain graphs across steps."""
     device = torch.device(device)
     if device.type != "cuda":
@@ -37,7 +38,13 @@ def benchmark(d_head, seq_len, device, batch_size, warmup=10, iterations=100):
             q.grad = k.grad = v.grad = None
             stage = "warmup forward" if step < warmup else "forward"
             start.record(stream)
-            output = scaled_dot_product_attention(q, k, v)
+
+            if compiled:
+                output = compiled_attention(q, k, v)
+            else:
+                output = scaled_dot_product_attention(q, k, v)
+            
+            
             end.record(stream)
             end.synchronize()
             forward_elapsed = start.elapsed_time(end)  # CUDA events return milliseconds.
@@ -71,6 +78,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cuda", help="cuda or cuda:N (auto also selects CUDA)")
     parser.add_argument("--warmup", type=int, default=10)
+    parser.add_argument("--compiled", type=bool, default=False)
     args = parser.parse_args()
     if args.warmup < 1:
         parser.error("--warmup must be at least 1")
@@ -82,12 +90,13 @@ def main():
 
     print(json.dumps({"device": str(device), "dtype": "float32", "batch_size": batch_size,
                       "iterations": 100, "warmup": args.warmup,
+                      "compiled": args.compiled,
                       "attention": "unmasked", "memory": "live tensor allocation",
                       "timing": "CUDA events"}), flush=True)
     torch.manual_seed(0)
     for d_head in (16, 32, 64, 128):
         for seq_len in (256, 1024, 4096, 8192, 16384):
-            row = benchmark(d_head, seq_len, device, batch_size=batch_size, warmup=args.warmup)
+            row = benchmark(d_head, seq_len, device, batch_size=batch_size, warmup=args.warmup, compiled=args.compiled)
             # The function has returned, so even OOM tracebacks no longer retain
             # its tensors. Release cached blocks before attempting the next shape.
             gc.collect()
