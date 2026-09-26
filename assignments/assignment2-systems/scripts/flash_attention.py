@@ -36,7 +36,7 @@ class PytorchFlashAttention(torch.autograd.Function):
         T_k = cdiv(N_k, B_k)
 
         O = torch.zeros_like(Q)
-        L = torch.zeros(N_q, device = Q.device, dtype = Q.dtype)
+        L = torch.zeros(N_q, device = Q.device)
 
         for i in range(T_q):
             Q_batch = Q[(B_q*i):(B_q*(i+1)),:]
@@ -45,8 +45,8 @@ class PytorchFlashAttention(torch.autograd.Function):
             l_batch = torch.zeros(height, device = Q.device, dtype = Q.dtype)
             m_batch = torch.full((height,), float("-inf"), device = Q.device, dtype = Q.dtype)
             for j in range(T_k):
-                K_batch = K[(B_k*j):(B_k*(j+1)),:]
-                V_batch = V[(B_k*j):(B_k*(j+1)),:]
+                K_batch = K[(T_k*j):(T_k*(j+1)),:]
+                V_batch = V[(T_k*j):(T_k*(j+1)),:]
                 attn_scores = Q_batch @ K_batch.T / math.sqrt(d) # B_q x B_k
 
                 m_batch_new = torch.max(m_batch, torch.amax(attn_scores, dim = -1)) # running max over each row in Q_batch
