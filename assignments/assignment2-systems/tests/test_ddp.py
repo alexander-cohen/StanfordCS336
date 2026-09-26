@@ -1,5 +1,6 @@
 import logging
 from copy import deepcopy
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -25,17 +26,18 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.parametrize("model_class", [ToyModel, ToyModelWithTiedWeights])
-def test_DistributedDataParallel(model_class):
+@pytest.mark.parametrize("flatten_gradients", [False, True])
+def test_DistributedDataParallel(model_class, flatten_gradients):
     world_size = 2
     mp.spawn(
         _test_DistributedDataParallel,
-        args=(world_size, model_class),
+        args=(world_size, model_class, flatten_gradients),
         nprocs=world_size,
         join=True,
     )
 
 
-def _test_DistributedDataParallel(rank: int, world_size: int, model_class: type[torch.nn.Module]):
+def _test_DistributedDataParallel(rank: int, world_size: int, model_class: type[torch.nn.Module], flatten_gradients: bool):
     # Use gloo backend for CPU
     device = _setup_process_group(rank=rank, world_size=world_size, backend="gloo")
     # Execute barrier prior to running test to ensure that every process
@@ -53,7 +55,12 @@ def _test_DistributedDataParallel(rank: int, world_size: int, model_class: type[
     # Create a DDP model. Note that the weights of this model should
     # match the non-parallel baseline above.
     ddp_base = deepcopy(non_parallel_model)
-    ddp_model = get_ddp(ddp_base)
+    if flatten_gradients:
+        from cs336_systems.parallel_training import DDPFlat
+
+        ddp_model = DDPFlat(ddp_base)
+    else:
+        ddp_model = get_ddp(ddp_base)
 
     # If we're on rank 0, the DDP model should still exactly match the parameters of the
     # non-parallel baseline (since the parameters on rank 0 weren't changed).
@@ -128,7 +135,13 @@ def _test_DistributedDataParallel(rank: int, world_size: int, model_class: type[
 
         # Run student-written code that needs to execute after the backward pass,
         # but before the optimizer step (e.g., to wait for all DDP ranks to sync gradients)
-        ddp_on_after_backward(ddp_model, ddp_optimizer)
+        with patch.object(dist, "all_reduce", wraps=dist.all_reduce) as all_reduce:
+            ddp_on_after_backward(ddp_model, ddp_optimizer)
+            if flatten_gradients:
+                assert all_reduce.call_count == 1
+                communicated = all_reduce.call_args.args[0]
+                assert communicated.ndim == 1
+                assert communicated.numel() == sum(p.numel() for p in ddp_model.parameters() if p.requires_grad)
 
         ddp_optimizer.step()
 

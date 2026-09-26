@@ -1,4 +1,5 @@
 import argparse
+import json
 import tomllib
 from typing import Literal
 from pathlib import Path
@@ -131,6 +132,7 @@ def init_model(size_option: Literal["small", "medium", "large", "xl", "10B"] = "
 def benchmark_naive_ddp_training(
     rank, model_size="xl", world_size=2, batch_size_per_dev=8, warmup=5, iter=20,
     profile=False, profile_iters=3, trace_dir="profiles/ddp",
+    ddp_variant="overlap", seed=42, timing_breakdown=False, result_json=None,
 ):
     is_cuda = torch.cuda.is_available()
     device = f"cuda:{rank}" if is_cuda else "cpu"
@@ -138,12 +140,18 @@ def benchmark_naive_ddp_training(
         torch.cuda.set_device(rank)
     setup(rank, "nccl" if is_cuda else "gloo", world_size)
 
+    torch.manual_seed(seed)
     model, model_config = init_model(model_size, device=device)
-    model_ddp = cs336_systems.parallel_training.DDP(model)
+    wrappers = {
+        "naive": cs336_systems.parallel_training.NaiveDDP,
+        "overlap": cs336_systems.parallel_training.DDP,
+        "flat": cs336_systems.parallel_training.DDPFlat,
+    }
+    model_ddp = wrappers[ddp_variant](model)
     optimizer = cs336_basics.optimizer.AdamW(model_ddp.parameters(), lr=0.1)
     model_ddp.train()
 
-    generator = torch.Generator(device=device).manual_seed(42 + rank)
+    generator = torch.Generator(device=device).manual_seed(seed + rank)
     tokens = torch.randint(
         model_config["vocab_size"],
         (batch_size_per_dev, model_config["context_length"] + 1),
@@ -165,12 +173,13 @@ def benchmark_naive_ddp_training(
         loss.backward()
         # Wait only for the compute stream: a device-wide sync here would also
         # wait for outstanding communication, hiding the remaining wait below.
-        if is_cuda:
+        if timing_breakdown and is_cuda:
             torch.cuda.current_stream(device).synchronize()
         backward_end = time.perf_counter()
 
         model_ddp.finish_gradient_synchronization()
-        synchronize()
+        if timing_breakdown:
+            synchronize()
         communication_end = time.perf_counter()
 
         optimizer.step()
@@ -183,18 +192,30 @@ def benchmark_naive_ddp_training(
                 (end - communication_end) * 1000,
             ))
 
-    local_means = [statistics.mean(values) for values in zip(*samples)]
-    rank_means = [None] * world_size
-    dist.all_gather_object(rank_means, local_means)
+    rank_samples = [None] * world_size
+    dist.all_gather_object(rank_samples, samples)
     if rank == 0:
-        backward_ms, wait_ms, optimizer_ms = [statistics.mean(values) for values in zip(*rank_means)]
+        # Report the rank with the largest mean step time, not the average worker.
+        slowest_rank = max(range(world_size), key=lambda r: statistics.mean(map(sum, rank_samples[r])))
+        selected_samples = rank_samples[slowest_rank]
+        backward_ms, wait_ms, optimizer_ms = [statistics.mean(values) for values in zip(*selected_samples)]
         total_ms = backward_ms + wait_ms + optimizer_ms
-        print(f"DDP model={model_size}, world_size={world_size}, local_batch={batch_size_per_dev}, "
-              f"warmup={warmup}, measured_iters={iter}")
-        print(f"Mean across ranks: step={total_ms:.3f} ms, "
-              f"forward/backward (overlaps communication)={backward_ms:.3f} ms, "
-              f"remaining communication wait={wait_ms:.3f} ms ({wait_ms / total_ms:.1%}), "
-              f"optimizer={optimizer_ms:.3f} ms")
+        summary = dict(variant=ddp_variant, model=model_size, world_size=world_size,
+                       batch_size_per_dev=batch_size_per_dev, seed=seed, warmup=warmup, iterations=iter,
+                       timing_breakdown=timing_breakdown, slowest_rank=slowest_rank,
+                       mean_step_ms=total_ms, std_step_ms=statistics.pstdev(map(sum, selected_samples)))
+        print(f"DDP variant={ddp_variant}, model={model_size}, world_size={world_size}, "
+              f"local_batch={batch_size_per_dev}, warmup={warmup}, measured_iters={iter}")
+        print(f"Slowest mean rank ({slowest_rank}): step={total_ms:.3f} ms "
+              f"(std {summary['std_step_ms']:.3f} ms)", flush=True)
+        if timing_breakdown:
+            print(f"Instrumented breakdown: forward/backward={backward_ms:.3f} ms, "
+                  f"finish_gradient_synchronization={wait_ms:.3f} ms ({wait_ms / total_ms:.1%}), "
+                  f"optimizer={optimizer_ms:.3f} ms. For overlap, synchronization is only the remaining wait.")
+        if result_json:
+            result_path = Path(result_json)
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(json.dumps(summary, indent=2) + "\n")
 
     if profile:
         # A separate pass keeps profiler overhead out of the timing report.
@@ -237,7 +258,8 @@ def entry_benchmark_naive_ddp(args):
     mp.spawn(
         fn=benchmark_naive_ddp_training,
         args=(args.model_size, args.world_size, args.batch_size_per_dev, args.warmup, args.iter,
-              args.profile, args.profile_iters, args.trace_dir),
+              args.profile, args.profile_iters, args.trace_dir,
+              args.ddp_variant, args.seed, args.timing_breakdown, args.result_json),
         nprocs=args.world_size,
         join=True,
     )
@@ -259,6 +281,10 @@ def main():
     training_args.add_argument("--profile", action="store_true", help="Capture extra training steps after timing")
     training_args.add_argument("--profile_iters", type=int, default=3)
     training_args.add_argument("--trace_dir", default="profiles/ddp")
+    training_args.add_argument("--ddp_variant", choices=["naive", "overlap", "flat"], default="overlap")
+    training_args.add_argument("--seed", type=int, default=42)
+    training_args.add_argument("--timing_breakdown", action="store_true", help="Synchronize phase boundaries for diagnostic timings")
+    training_args.add_argument("--result_json", help="Write timing summary to this file")
     args = parser.parse_args()
 
     if args.world_size < 1:
