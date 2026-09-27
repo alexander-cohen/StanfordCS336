@@ -1,0 +1,8 @@
+DDP variant=flat, model=large, world_size=2, local_batch=8, warmup=5, measured_iters=20
+Slowest mean rank (1): step=746.616 ms (std 0.161 ms)
+/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+Rank 1: saved 3 profiled steps to results/ddp_compare_18604320/traces/flat/ddp_rank1.json
+Rank 0: saved 3 profiled steps to results/ddp_compare_18604320/traces/flat/ddp_rank0.json

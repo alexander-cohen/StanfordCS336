@@ -1,0 +1,8 @@
+DDP variant=overlap, model=large, world_size=2, local_batch=8, warmup=5, measured_iters=20
+Slowest mean rank (1): step=738.653 ms (std 5.984 ms)
+/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+Rank 0: saved 3 profiled steps to results/ddp_compare_18604320/traces/overlap/ddp_rank0.json
+Rank 1: saved 3 profiled steps to results/ddp_compare_18604320/traces/overlap/ddp_rank1.json

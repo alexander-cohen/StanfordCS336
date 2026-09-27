@@ -1,0 +1,13 @@
+data_size=100.0MB, world_size=2, is_cuda=True, all_reduce mean time: 0.3835584007203579ms
+[rank0]:[W926 17:19:26.415347597 ProcessGroupNCCL.cpp:1575] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+[rank1]:[W926 17:19:27.965241296 TCPStore.cpp:125] [c10d] recvValue failed on SocketImpl(fd=56, addr=[localhost.localdomain]:42558, remote=[localhost.localdomain]:31802): Failed to recv, got 0 bytes. Connection was likely closed. Did the remote server shutdown or crash?
+Exception raised from recvBytes at /pytorch/torch/csrc/distributed/c10d/Utils.hpp:682 (most recent call first):
+frame #0: c10::Error::Error(c10::SourceLocation, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >) + 0x9d (0x15499c57305d in /scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/lib/libc10.so)
+frame #1: <unknown function> + 0x6a914bd (0x1549052b24bd in /scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
+frame #2: c10d::TCPStore::check(std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&) + 0x273 (0x1549052b0413 in /scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cpu.so)
+frame #3: c10d::ProcessGroupNCCL::HeartbeatMonitor::runLoop() + 0x4a5 (0x1548e7a9c8c5 in /scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/lib/libtorch_cuda.so)
+frame #4: <unknown function> + 0xee0e4 (0x15496bcee0e4 in /lib64/libstdc++.so.6)
+frame #5: <unknown function> + 0x958bf (0x15499d5678bf in /lib64/libc.so.6)
+frame #6: <unknown function> + 0x10643c (0x15499d5d843c in /lib64/libc.so.6)
+
+[rank1]:[W926 17:19:27.980079052 ProcessGroupNCCL.cpp:1826] [PG ID 0 PG GUID 0(default_pg) Rank 1] Failed to check the "should dump" flag on TCPStore, (maybe TCPStore server has shut down too early), with error: Failed to recv, got 0 bytes. Connection was likely closed. Did the remote server shutdown or crash?
