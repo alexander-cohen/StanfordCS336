@@ -1,4 +1,5 @@
 import argparse
+from typing import Any, Type
 
 import time
 import os
@@ -6,6 +7,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import statistics
+import torch.optim as optim
 
 
 class NaiveDDP(torch.nn.Module):
@@ -95,3 +97,44 @@ class DDPFlat(torch.nn.Module):
             numel = p.numel()
             p.grad.copy_(flat_grad[offset : offset + numel].view_as(p))
             offset += numel
+
+
+class OptimizerSharded(optim.Optimizer):
+    def __init__(self, params, optimizer_cls: Type[optim.Optimizer], **kwargs: Any):
+        self.world_size = dist.get_world_size()
+        self.assign_on_rank = 0
+        self.optimizer_cls = optimizer_cls
+
+        self.params_by_rank = [[] for _ in range(self.world_size)]
+        self.local_optimizer = None
+        self.params_per_rank = [0 for _ in range(self.world_size)]
+        super().__init__(params, defaults=kwargs) # initializers self.param_groups
+
+    def step(self, closure, **kwargs):
+        if self.local_optimizer is not None:
+            self.local_optimizer.step(closure, **kwargs)
+
+        for owner, params in enumerate(self.params_by_rank):
+            for p in params:
+                dist.broadcast(p, src=owner)
+
+
+    def add_param_group(self, param_group: dict[str, Any]):
+        # Validate/register the full group and materialize any parameter generator.
+        super().add_param_group(param_group)
+        settings = {k: v for k, v in param_group.items() if k != "params"}
+        groups_by_rank = [dict(settings, params=[]) for _ in range(self.world_size)]
+
+        for p in param_group["params"]:
+            owner = self.params_per_rank.index(min(self.params_per_rank))
+            groups_by_rank[owner]["params"].append(p)
+            self.params_by_rank[owner].append(p)
+            self.params_per_rank[owner] += p.numel()
+
+        local_group = groups_by_rank[dist.get_rank()]
+        if not local_group["params"]:
+            return
+        if self.local_optimizer is None:
+            self.local_optimizer = self.optimizer_cls([local_group], **self.defaults)
+        else:
+            self.local_optimizer.add_param_group(local_group)
