@@ -15,6 +15,8 @@ import cs336_basics.nn_utils
 import cs336_basics.optimizer
 import cs336_systems.parallel_training
 
+
+
 def setup(rank, backend, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ.setdefault("MASTER_PORT", "29500")
@@ -243,6 +245,63 @@ def benchmark_naive_ddp_training(
     dist.destroy_process_group()
 
 
+def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8, warmup = 5, 
+                 profile_iters = 3, trace_dir="profiles/fsdp", seed=42):
+    is_cuda = torch.cuda.is_available()
+    device = f"cuda:{rank}" if is_cuda else "cpu"
+    if is_cuda:
+        torch.cuda.set_device(rank)
+    setup(rank, "nccl" if is_cuda else "gloo", world_size)
+
+    torch.manual_seed(seed)
+    model, model_config = init_model(model_size, device=device)
+
+    model_fsdp = cs336_systems.parallel_training.FSDP(model)    
+    optimizer = cs336_basics.optimizer.AdamW(model_fsdp.parameters(), lr=0.1)
+    model_fsdp.train()
+
+    generator = torch.Generator(device=device).manual_seed(seed + rank)
+    tokens = torch.randint(
+        model_config["vocab_size"],
+        (batch_size_per_dev, model_config["context_length"] + 1),
+        generator=generator, device=device,
+    )
+    data = tokens[:, :-1].contiguous()
+    labels = tokens[:, 1:].contiguous()
+
+    def synchronize():
+        if is_cuda:
+            torch.cuda.synchronize(device)
+
+    for step in range(warmup):
+        synchronize()
+        optimizer.zero_grad(set_to_none=True)
+        loss = cs336_basics.nn_utils.cross_entropy(model_fsdp(data), labels)
+        loss.backward()
+
+    # run profiler
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if is_cuda:
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+    with torch.profiler.profile(activities=activities) as prof:
+        for _ in range(profile_iters):
+            optimizer.zero_grad(set_to_none=True)
+            with torch.profiler.record_function("forward_backward"):
+                loss = cs336_basics.nn_utils.cross_entropy(model_fsdp(data), labels)
+                loss.backward()
+            with torch.profiler.record_function("optimizer_step"):
+                optimizer.step()
+            prof.step()
+        synchronize()
+    trace_path = Path(trace_dir) / f"fsdp_rank{rank}.json"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    prof.export_chrome_trace(str(trace_path))
+    print(f"Rank {rank}: saved {profile_iters} profiled steps to {trace_path}", flush=True)
+
+dist.destroy_process_group()
+
+    
+
 
 def entry_benchmark_all_reduce(args):
     mp.spawn(
@@ -265,9 +324,19 @@ def entry_benchmark_naive_ddp(args):
     )
 
 
+def entry_profile_fsdp(args):
+    mp.spawn(
+            fn=profile_fsdp,
+            args=(args.model_size, args.world_size, args.batch_size_per_dev, args.warmup, args.iter,
+                  args.profile, args.profile_iters, args.trace_dir,
+                  args.ddp_variant, args.seed, args.timing_breakdown, args.result_json),
+            nprocs=args.world_size,
+            join=True,
+        )
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmark all-reduce or DDP training.")
-    parser.add_argument("--benchmark", choices=["all_reduce", "ddp_training"], default="all_reduce")
+    parser.add_argument("--benchmark", choices=["all_reduce", "ddp_training", "fsdp"], default="all_reduce")
     parser.add_argument("--world_size", type=int, default=2)
 
     all_reduce_args = parser.add_argument_group("all_reduce options")
@@ -287,6 +356,11 @@ def main():
     training_args.add_argument("--result_json", help="Write timing summary to this file")
     args = parser.parse_args()
 
+    fsdp_args = parser.add_argument_group("fsdp options")
+    training_args.add_argument("--model_size", choices=["small", "medium", "large", "xl", "10B"], default="xl")
+    training_args.add_argument("--batch_size_per_dev", type=int, default=8)
+
+
     if args.world_size < 1:
         parser.error("--world_size must be positive")
     if args.iter < 1 or args.warmup < 0:
@@ -297,12 +371,18 @@ def main():
         if args.data_size_mb < 1:
             parser.error("--data_size_mb must be positive")
         entry_benchmark_all_reduce(args)
-    else:
+    elif args.benchmark == "ddp_training":
         if args.batch_size_per_dev < 1:
             parser.error("--batch_size_per_dev must be positive")
         if args.profile_iters < 1:
             parser.error("--profile_iters must be positive")
         entry_benchmark_naive_ddp(args)
+    elif args.benchmark == "fsdp":
+        if args.batch_size_per_dev < 1:
+            parser.error("--batch_size_per_dev must be positive")
+        if args.profile_iters < 1:
+            parser.error("--profile_iters must be positive")
+        entry_profile_fsdp(args)
 
 
 if __name__ == "__main__":

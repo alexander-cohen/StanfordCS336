@@ -93,8 +93,9 @@ def get_fsdp(module: torch.nn.Module, compute_dtype: torch.dtype | None = None) 
     Returns:
         Instance of an FSDP class.
     """
-    # For example: return FSDP(module, compute_dtype=compute_dtype)
-    raise NotImplementedError
+    from cs336_systems.parallel_training import FSDP
+
+    return FSDP(module, compute_dtype=compute_dtype)
 
 
 def fsdp_on_after_backward(fsdp_model: torch.nn.Module, optimizer: torch.optim.Optimizer):
@@ -108,8 +109,7 @@ def fsdp_on_after_backward(fsdp_model: torch.nn.Module, optimizer: torch.optim.O
         optimizer: torch.optim.Optimizer
             Optimizer being used with the FSDP-wrapped model.
     """
-    # For example: fsdp_model.finish_gradient_synchronization()
-    raise NotImplementedError
+    fsdp_model.finish_gradient_synchronization()
 
 
 def fsdp_gather_full_params(fsdp_model: torch.nn.Module) -> dict[str, torch.Tensor]:
@@ -123,7 +123,27 @@ def fsdp_gather_full_params(fsdp_model: torch.nn.Module) -> dict[str, torch.Tens
     Returns:
         State dictionary mapping parameter names to full (unsharded) tensors.
     """
-    raise NotImplementedError
+    from cs336_systems.parallel_training import ShardedModule, ShardedParameter
+
+    full_params = {}
+
+    def gather(module, prefix=""):
+        # Hide the extra `.module` level introduced by each sharded wrapper.
+        if isinstance(module, ShardedModule):
+            module = module.module
+        for name, param in module.named_parameters(recurse=False):
+            if isinstance(param, ShardedParameter):
+                shards = [torch.empty_like(param.sharded) for _ in range(param.world_size)]
+                torch.distributed.all_gather(shards, param.sharded)
+                full_params[prefix + name] = torch.cat(shards).view(param.param_shape)
+            else:
+                full_params[prefix + name] = param.detach()
+        for name, child in module.named_children():
+            gather(child, prefix + name + ".")
+
+    with torch.no_grad():
+        gather(fsdp_model.module)
+    return full_params
 
 
 def get_sharded_optimizer(params, optimizer_cls: type[torch.optim.Optimizer], **kwargs) -> torch.optim.Optimizer:

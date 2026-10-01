@@ -24,7 +24,7 @@ export OMP_NUM_THREADS=1
 for variant in naive overlap flat; do
     srun uv run python -u scripts/benchmark_distributed.py \
         --benchmark ddp_training --model_size "$model_size" \
-        --world_size 2 --batch_size_per_dev 8 --seed 42 --warmup 5 --iter 20 \
+        --world_size 2 --profile --batch_size_per_dev 8 --seed 42 --warmup 5 --iter 20 \
         "$@" --ddp_variant "$variant" \
         --result_json "$output_dir/$variant.json" \
         --trace_dir "$output_dir/traces/$variant" \
