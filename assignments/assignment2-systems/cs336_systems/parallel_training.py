@@ -239,17 +239,18 @@ class ShardedParameter(torch.nn.Parameter):
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
         self.my_numel = param.numel()
+        self.shard_device = param.device
 
         assert self.my_numel % self.world_size == 0
 
         self.size_per_rank = self.my_numel // self.world_size
 
         self.compute_dtype = compute_dtype
-        self.unsharded = torch.empty(self.my_numel, dtype = self.compute_dtype) # keep unsharded weights in compute_dtype
+        self.unsharded = torch.empty(self.my_numel, dtype = self.compute_dtype, device = self.shard_device) # keep unsharded weights in compute_dtype
 
         with torch.no_grad():
             # Copy data into the sharded piece
-            self.sharded = torch.empty(self.size_per_rank, dtype=torch.float32) # always keep sharded parameter in float32
+            self.sharded = torch.empty(self.size_per_rank, dtype=torch.float32, device = self.shard_device) # always keep sharded parameter in float32
             self.sharded.copy_(param.view(-1).chunk(self.world_size)[self.rank])
             self.data = self.sharded
 
@@ -258,7 +259,7 @@ class ShardedParameter(torch.nn.Parameter):
 
     # Gather the data tensor to prepare for forward pass
     def gather_data(self):
-        self.unsharded = torch.empty(self.my_numel, dtype = self.compute_dtype)
+        self.unsharded = torch.empty(self.my_numel, dtype = self.compute_dtype, device = self.shard_device)
         self.data = self.unsharded
         self.gather_input = self.sharded.to(self.compute_dtype)
         handle = dist.all_gather_into_tensor(self.unsharded, self.gather_input, async_op=True)

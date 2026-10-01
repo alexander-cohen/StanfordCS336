@@ -245,8 +245,7 @@ def benchmark_naive_ddp_training(
     dist.destroy_process_group()
 
 
-def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8, warmup = 5, 
-                 profile_iters = 3, trace_dir="profiles/fsdp", seed=42):
+def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8, warmup = 5, profile_iters = 3, trace_dir="profiles/fsdp", seed=42):
     is_cuda = torch.cuda.is_available()
     device = f"cuda:{rank}" if is_cuda else "cpu"
     if is_cuda:
@@ -278,6 +277,8 @@ def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8
         optimizer.zero_grad(set_to_none=True)
         loss = cs336_basics.nn_utils.cross_entropy(model_fsdp(data), labels)
         loss.backward()
+        model_fsdp.finish_gradient_synchronization()
+        optimizer.step()
 
     # run profiler
     activities = [torch.profiler.ProfilerActivity.CPU]
@@ -289,6 +290,8 @@ def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8
             with torch.profiler.record_function("forward_backward"):
                 loss = cs336_basics.nn_utils.cross_entropy(model_fsdp(data), labels)
                 loss.backward()
+            with torch.profiler.record_function("finish_gradient_synchronization"):
+                model_fsdp.finish_gradient_synchronization()
             with torch.profiler.record_function("optimizer_step"):
                 optimizer.step()
             prof.step()
@@ -298,7 +301,7 @@ def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8
     prof.export_chrome_trace(str(trace_path))
     print(f"Rank {rank}: saved {profile_iters} profiled steps to {trace_path}", flush=True)
 
-dist.destroy_process_group()
+    dist.destroy_process_group()
 
     
 
@@ -327,9 +330,7 @@ def entry_benchmark_naive_ddp(args):
 def entry_profile_fsdp(args):
     mp.spawn(
             fn=profile_fsdp,
-            args=(args.model_size, args.world_size, args.batch_size_per_dev, args.warmup, args.iter,
-                  args.profile, args.profile_iters, args.trace_dir,
-                  args.ddp_variant, args.seed, args.timing_breakdown, args.result_json),
+            args=(args.model_size, args.world_size, args.batch_size_per_dev, args.warmup, args.profile_iters, args.trace_dir, args.seed),
             nprocs=args.world_size,
             join=True,
         )
@@ -356,9 +357,9 @@ def main():
     training_args.add_argument("--result_json", help="Write timing summary to this file")
     args = parser.parse_args()
 
-    fsdp_args = parser.add_argument_group("fsdp options")
-    training_args.add_argument("--model_size", choices=["small", "medium", "large", "xl", "10B"], default="xl")
-    training_args.add_argument("--batch_size_per_dev", type=int, default=8)
+    # fsdp_args = parser.add_argument_group("fsdp options")
+    # fsdp_args.add_argument("--model_size", choices=["small", "medium", "large", "xl", "10B"], default="xl")
+    # fsdp_args.add_argument("--batch_size_per_dev", type=int, default=8)
 
 
     if args.world_size < 1:
