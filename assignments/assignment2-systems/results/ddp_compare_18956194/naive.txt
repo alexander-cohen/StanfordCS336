@@ -1,0 +1,2 @@
+DDP variant=naive, model=large, world_size=2, local_batch=8, warmup=5, measured_iters=20
+Slowest mean rank (0): step=751.041 ms (std 0.119 ms)

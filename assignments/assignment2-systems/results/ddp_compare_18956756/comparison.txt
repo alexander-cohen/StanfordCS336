@@ -1,0 +1,4 @@
+Variant         Step (ms)     Std (ms)   Speedup vs naive
+naive             752.109        0.171              1.00x
+overlap           739.336        5.370              1.02x
+flat              747.820        0.144              1.01x

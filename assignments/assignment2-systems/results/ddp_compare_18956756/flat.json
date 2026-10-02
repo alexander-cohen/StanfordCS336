@@ -1,0 +1,13 @@
+{
+  "variant": "flat",
+  "model": "large",
+  "world_size": 2,
+  "batch_size_per_dev": 8,
+  "seed": 42,
+  "warmup": 5,
+  "iterations": 20,
+  "timing_breakdown": false,
+  "slowest_rank": 1,
+  "mean_step_ms": 747.8197616175748,
+  "std_step_ms": 0.14417036723418594
+}

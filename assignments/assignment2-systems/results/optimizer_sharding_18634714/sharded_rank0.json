@@ -1,0 +1,50 @@
+{
+  "mode": "sharded",
+  "rank": 0,
+  "model": "xl",
+  "world_size": 2,
+  "batch_size_per_dev": 8,
+  "dtype": "float32",
+  "seed": 42,
+  "optimizer": "torch.optim.AdamW",
+  "foreach": false,
+  "lr": 0.0003,
+  "warmup": 5,
+  "iterations": 20,
+  "checkpoints": [
+    {
+      "stage": "after_model_init",
+      "allocated_bytes": 13762340864,
+      "phase_peak_bytes": 13762340864,
+      "reserved_bytes": 13763608576
+    },
+    {
+      "stage": "first_before_optimizer_step",
+      "allocated_bytes": 27456753664,
+      "phase_peak_bytes": 72082204672,
+      "reserved_bytes": 74474061824
+    },
+    {
+      "stage": "first_after_optimizer_step",
+      "allocated_bytes": 41083326464,
+      "phase_peak_bytes": 41397899264,
+      "reserved_bytes": 74474061824
+    },
+    {
+      "stage": "warmed_before_optimizer_step",
+      "allocated_bytes": 41083326464,
+      "phase_peak_bytes": 85742331904,
+      "reserved_bytes": 92861890560
+    },
+    {
+      "stage": "warmed_after_optimizer_step",
+      "allocated_bytes": 41083326464,
+      "phase_peak_bytes": 41397899264,
+      "reserved_bytes": 92861890560
+    }
+  ],
+  "context_length": 512,
+  "parameter_count": 3406809600,
+  "mean_step_ms": 2112.297774248873,
+  "optimizer_state_bytes": 13626572800
+}

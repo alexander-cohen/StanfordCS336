@@ -1,0 +1,48 @@
+unsharded rank=1 after_model_init: allocated=12.817 GiB, phase peak=12.817 GiB
+unsharded rank=0 after_model_init: allocated=12.817 GiB, phase peak=12.817 GiB
+unsharded rank=0 first_before_optimizer_step: allocated=25.571 GiB, phase peak=67.132 GiB
+unsharded rank=1 first_before_optimizer_step: allocated=25.571 GiB, phase peak=67.132 GiB
+unsharded rank=1 first_after_optimizer_step: allocated=50.954 GiB, phase peak=51.247 GiB
+unsharded rank=0 first_after_optimizer_step: allocated=50.954 GiB, phase peak=51.247 GiB
+unsharded rank=0 warmed_before_optimizer_step: allocated=50.954 GiB, phase peak=92.546 GiB
+unsharded rank=1 warmed_before_optimizer_step: allocated=50.954 GiB, phase peak=92.546 GiB
+unsharded rank=0 warmed_after_optimizer_step: allocated=50.954 GiB, phase peak=51.247 GiB
+unsharded rank=1 warmed_after_optimizer_step: allocated=50.954 GiB, phase peak=51.247 GiB
+/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+sharded rank=1 after_model_init: allocated=12.817 GiB, phase peak=12.817 GiB
+sharded rank=0 after_model_init: allocated=12.817 GiB, phase peak=12.817 GiB
+sharded rank=1 first_before_optimizer_step: allocated=25.571 GiB, phase peak=67.132 GiB
+sharded rank=0 first_before_optimizer_step: allocated=25.571 GiB, phase peak=67.132 GiB
+sharded rank=1 first_after_optimizer_step: allocated=38.263 GiB, phase peak=38.483 GiB
+sharded rank=0 first_after_optimizer_step: allocated=38.262 GiB, phase peak=38.555 GiB
+sharded rank=1 warmed_before_optimizer_step: allocated=38.263 GiB, phase peak=79.855 GiB
+sharded rank=0 warmed_before_optimizer_step: allocated=38.262 GiB, phase peak=79.854 GiB
+sharded rank=1 warmed_after_optimizer_step: allocated=38.263 GiB, phase peak=38.483 GiB
+sharded rank=0 warmed_after_optimizer_step: allocated=38.262 GiB, phase peak=38.555 GiB
+/scratch/ac6074/StanfordCS336/assignments/assignment2-systems/.venv/lib/python3.12/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+# Optimizer sharding: memory and speed
+
+Model: xl; GPUs: 2; local batch: 8; context: 512; dtype: float32.
+Optimizer: torch.optim.AdamW, foreach=False; same overlapping DDP in both modes.
+
+Memory is maximum per-GPU PyTorch allocation across ranks, in GiB (not a sum).
+Phase peaks reset before model construction, forward/backward, and optimizer update. They include live tensors already present at the reset. Current allocations are measured at each checkpoint.
+NCCL allocations outside the PyTorch allocator are not included. Full per-rank data are in JSON.
+
+| Checkpoint | Unsharded peak | Sharded peak | Unsharded current | Sharded current |
+|---|---:|---:|---:|---:|
+| after_model_init | 12.817 | 12.817 | 12.817 | 12.817 |
+| first_before_optimizer_step | 67.132 | 67.132 | 25.571 | 25.571 |
+| first_after_optimizer_step | 51.247 | 38.555 | 50.954 | 38.263 |
+| warmed_before_optimizer_step | 92.546 | 79.855 | 50.954 | 38.263 |
+| warmed_after_optimizer_step | 51.247 | 38.555 | 50.954 | 38.263 |
+
+Speed: 20 timed steps after 5 warmup steps and two memory-probe steps. Slowest rank's average, with synchronization only at the timed block boundaries.
+
+| Mode | ms / iteration | Speedup vs unsharded |
+|---|---:|---:|
+| unsharded | 2105.938 | 1.000x |
+| sharded | 2112.299 | 0.997x |
+

@@ -1,0 +1,13 @@
+{
+  "variant": "overlap",
+  "model": "large",
+  "world_size": 2,
+  "batch_size_per_dev": 8,
+  "seed": 42,
+  "warmup": 5,
+  "iterations": 20,
+  "timing_breakdown": false,
+  "slowest_rank": 0,
+  "mean_step_ms": 738.7255225796252,
+  "std_step_ms": 0.4302783416504225
+}

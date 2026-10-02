@@ -1,0 +1,13 @@
+{
+  "variant": "naive",
+  "model": "large",
+  "world_size": 2,
+  "batch_size_per_dev": 8,
+  "seed": 42,
+  "warmup": 5,
+  "iterations": 20,
+  "timing_breakdown": false,
+  "slowest_rank": 0,
+  "mean_step_ms": 752.1091798902489,
+  "std_step_ms": 0.17103917393890392
+}

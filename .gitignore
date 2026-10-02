@@ -2,4 +2,5 @@
 **/.venv/
 **/.venv-broken/
 **/__pycache__/
-*.pyc
+*.pyc/assignments/assignment2-systems/profiles/fsdp/*/fsdp_rank*.json
+/assignments/assignment2-systems/results/ddp_compare_*/traces/
