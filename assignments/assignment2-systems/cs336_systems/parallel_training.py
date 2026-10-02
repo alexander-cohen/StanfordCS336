@@ -387,7 +387,13 @@ class FSDP(torch.nn.Module):
             p.grad.div_(self.world_size)
 
     def wrap_linear_layers(self, parent):
-        for name, child in list(parent.named_children()):
+        children = list(parent.named_children())
+        if isinstance(parent, cs336_basics.model.SwiGLU):
+            children = [
+                (name, getattr(parent, name))
+                for name in ("w1", "w3", "w2")
+            ]
+        for name, child in children:
             if isinstance(child, (cs336_basics.model.Linear, cs336_basics.model.Embedding)):
                 sharded_child = ShardedModule(child, compute_dtype = self.compute_dtype)
                 setattr(parent, name, sharded_child)
