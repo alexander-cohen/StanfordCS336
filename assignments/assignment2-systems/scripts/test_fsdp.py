@@ -74,7 +74,7 @@ def compare_parameters(wrapped, reference, rank, world_size, *, gradients=False)
         )
 
 
-def worker(rank, world_size, device_kind, case, rendezvous):
+def worker(rank, world_size, device_kind, case, rendezvous, prefetch=True):
     torch.set_num_threads(1)
     device = torch.device(f"cuda:{rank}" if device_kind == "cuda" else "cpu")
     if device_kind == "cuda":
@@ -88,7 +88,7 @@ def worker(rank, world_size, device_kind, case, rendezvous):
         # Identical initial weights; distinct examples on each rank.
         torch.manual_seed(42)
         reference = ToyModel().to(device)
-        wrapped = FSDP(deepcopy(reference))
+        wrapped = FSDP(deepcopy(reference), prefetch=prefetch)
         if case == "init":
             compare_parameters(wrapped, reference, rank, world_size)
         else:
@@ -132,6 +132,7 @@ def main():
     parser.add_argument("--case", choices=["init", "forward", "train", "all"], default="all")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--world-size", type=int, choices=[1, 2, 4], default=2)
+    parser.add_argument("--no-prefetch", dest="prefetch", action="store_false")
     args = parser.parse_args()
     if args.device == "cuda" and torch.cuda.device_count() < args.world_size:
         parser.error(f"CUDA test requires {args.world_size} visible GPUs")
@@ -143,7 +144,7 @@ def main():
         with TemporaryDirectory(prefix="fsdp-test-") as directory:
             rendezvous = (Path(directory) / "rendezvous").as_uri()
             try:
-                mp.spawn(worker, args=(args.world_size, args.device, case, rendezvous),
+                mp.spawn(worker, args=(args.world_size, args.device, case, rendezvous, args.prefetch),
                          nprocs=args.world_size, join=True)
             except Exception as exc:
                 print(f"FAIL: {case}\n{exc}", flush=True)

@@ -245,7 +245,7 @@ def benchmark_naive_ddp_training(
     dist.destroy_process_group()
 
 
-def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8, warmup = 5, profile_iters = 3, trace_dir="profiles/fsdp", seed=42):
+def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8, warmup = 5, profile_iters = 3, trace_dir="profiles/fsdp", seed=42, prefetch=True):
     is_cuda = torch.cuda.is_available()
     device = f"cuda:{rank}" if is_cuda else "cpu"
     if is_cuda:
@@ -255,7 +255,9 @@ def profile_fsdp(rank, model_size = "xl", world_size = 2, batch_size_per_dev = 8
     torch.manual_seed(seed)
     model, model_config = init_model(model_size, device=device)
 
-    model_fsdp = cs336_systems.parallel_training.FSDP(model)    
+    model_fsdp = cs336_systems.parallel_training.FSDP(model, prefetch=prefetch)
+    if rank == 0:
+        print(f"FSDP weight gathering: {'prefetch' if prefetch else 'just in time'}", flush=True)
     optimizer = cs336_basics.optimizer.AdamW(model_fsdp.parameters(), lr=0.1)
     model_fsdp.train()
 
@@ -330,7 +332,7 @@ def entry_benchmark_naive_ddp(args):
 def entry_profile_fsdp(args):
     mp.spawn(
             fn=profile_fsdp,
-            args=(args.model_size, args.world_size, args.batch_size_per_dev, args.warmup, args.profile_iters, args.trace_dir, args.seed),
+            args=(args.model_size, args.world_size, args.batch_size_per_dev, args.warmup, args.profile_iters, args.trace_dir, args.seed, args.prefetch),
             nprocs=args.world_size,
             join=True,
         )
@@ -355,6 +357,9 @@ def main():
     training_args.add_argument("--seed", type=int, default=42)
     training_args.add_argument("--timing_breakdown", action="store_true", help="Synchronize phase boundaries for diagnostic timings")
     training_args.add_argument("--result_json", help="Write timing summary to this file")
+    fsdp_args = parser.add_argument_group("fsdp options")
+    fsdp_args.add_argument("--no-prefetch", "--no_prefetch", dest="prefetch", action="store_false",
+                           help="Gather FSDP weights just in time for each layer in forward and backward")
     args = parser.parse_args()
 
     # fsdp_args = parser.add_argument_group("fsdp options")

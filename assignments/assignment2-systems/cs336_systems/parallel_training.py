@@ -334,7 +334,7 @@ def average_param(p, *args):
     dist.all_reduce(p.grad)
 
 class FSDP(torch.nn.Module):
-    def __init__(self, module: torch.nn.Module, compute_dtype = torch.float32):
+    def __init__(self, module: torch.nn.Module, compute_dtype = torch.float32, prefetch = True):
         """ Given an instantiated pytorch nn.Module, construct an FSDP module that will handle weight all-gathers and gradient reduce-scatters. make sure that your hooks or your module wrappers all-gather the weights in time for the forward pass. to limit memory use, only start gathering after the layer two before the current one has completed its forward pass.
         in the backward pass, your hooks or module wrappers should all-gather to have the weights available for the computation. when the gradients are available, they should be reduce-scattered to the appropriate ranks. make sure to free the gathered weights after use. when compute_dtype is provide, cast the weights to that dtype before communicating or using them for compute, while keeping master weights and optimizer updates in FP32"""
 
@@ -349,20 +349,24 @@ class FSDP(torch.nn.Module):
         self.wrap_linear_layers(self.module)
 
 
-        # register hooks to gather data for forward pass
-        # this doesnt seem like quite the right way to register? not sure.
-        self.register_forward_pre_hook(self.lin_modules[0].gather_data)
-        for i in range(len(self.lin_modules)-1):
-            m1 = self.lin_modules[i]
-            m2 = self.lin_modules[i+1]
-            m1.register_forward_pre_hook(m2.gather_data)
+        if prefetch:
+            # Gather the next layer while the current layer computes.
+            self.register_forward_pre_hook(self.lin_modules[0].gather_data)
+            for i in range(len(self.lin_modules)-1):
+                m1 = self.lin_modules[i]
+                m2 = self.lin_modules[i+1]
+                m1.register_forward_pre_hook(m2.gather_data)
 
-        # register hooks to gather data for backward pass
-        self.register_full_backward_pre_hook(self.lin_modules[-1].gather_data)
-        for i in range(len(self.lin_modules)-1):
-            m1 = self.lin_modules[i]
-            m2 = self.lin_modules[i+1]
-            m2.register_full_backward_pre_hook(m1.gather_data)
+            self.register_full_backward_pre_hook(self.lin_modules[-1].gather_data)
+            for i in range(len(self.lin_modules)-1):
+                m1 = self.lin_modules[i]
+                m2 = self.lin_modules[i+1]
+                m2.register_full_backward_pre_hook(m1.gather_data)
+        else:
+            # Gather only this layer; finish_gathering waits before its compute.
+            for m in self.lin_modules:
+                m.register_forward_pre_hook(m.gather_data)
+                m.register_full_backward_pre_hook(m.gather_data)
 
         # reshard gradients after backward completes
         for m in self.lin_modules:
