@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euo pipefail
+assignment_dir=$(cd "$(dirname "$0")/.." && pwd)
+cd "$assignment_dir"
+exec "$assignment_dir/.venv/bin/python" -m torch_submission "$@"
