@@ -2,6 +2,31 @@
 ## extract text from html bytes file ## 
 
 import resiliparse.extract.html2text
+from fastwarc.warc import ArchiveIterator, WarcRecordType
+
+
+## Depends on the machine
+CLASSIFIER_DIR = "/scratch/ac6074/cs336-a4-data/classifiers"
+
+## 
+## 
+def warc_text_iterator(file_path): 
+    """
+    Make an iterator over WARC entries, returning the entry along with extracted plain text using resiliparse
+    Use as for entry, parsed_text in warc_text_iterator()
+    yields entry, warc_txt
+    """
+    with open(file_path, "rb") as f:
+        it = ArchiveIterator(f)
+        for entry in it:
+            if entry.headers.get("Content-Type", "NONE") in ["application/http; msgtype=response", "application/http;msgtype=response"]: continue
+            try: 
+                warc_str = entry.reader.read().decode()
+                warc_txt = resiliparse.extract.html2text.extract_plain_text(warc_str).strip()
+                if len(warc_txt) == 0: continue
+                yield entry, warc_txt
+            except UnicodeDecodeError:
+                continue
 
 def extract_text_from_warc_bytes(doc_bytes):
     try: 
@@ -15,7 +40,7 @@ def extract_text_from_warc_bytes(doc_bytes):
 ## identify language using fasttext classifier ##
 
 import fasttext
-lang_detect_model = fasttext.load_model("local-shared-data/classifiers/lid.176.bin")
+lang_detect_model = fasttext.load_model(f"{CLASSIFIER_DIR}/lid.176.bin")
 
 def identify_language(text):
     stripped = text.replace("\n", " ").strip()
@@ -24,6 +49,10 @@ def identify_language(text):
     conf = conf[0]
     return lan[-2:], conf
 
+
+def is_english(text, english_cutoff = 0.80):
+    lang, conf = identify_language(text)
+    return lang == "en" and conf >= english_cutoff
 
 ####
 ## mask email, phone, and IP using regex ## 
@@ -58,8 +87,8 @@ def mask_ip(str):
 ## classify NSFW and hatespeech using fasttext classifiers ## 
 
 import fasttext
-nsfw_model = fasttext.load_model("local-shared-data/classifiers/dolma_fasttext_nsfw_jigsaw_model.bin")
-hatespeech_model = fasttext.load_model("local-shared-data/classifiers/dolma_fasttext_hatespeech_jigsaw_model.bin")
+nsfw_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_nsfw_jigsaw_model.bin")
+hatespeech_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_hatespeech_jigsaw_model.bin")
 
 def get_is_nsfw(text, with_conf = True):
     stripped = text.replace('\n', ' ').strip()
@@ -69,7 +98,7 @@ def get_is_nsfw(text, with_conf = True):
     if with_conf:
         return pred , conf
     else:
-        return pred
+        return pred == 'nsfw'
 
 def get_is_hatespeech(text, with_conf = True):
     stripped = text.replace('\n', ' ').strip()
@@ -79,7 +108,7 @@ def get_is_hatespeech(text, with_conf = True):
     if with_conf:
         return pred , conf
     else:
-        return pred
+        return pred == 'hatespeech'
 
 
 
@@ -121,6 +150,27 @@ def check_gopher_good(text, word_ran = (50, 100_000), mean_word_len_ran = (3, 10
     alphanum_good = percent_alphanum >= min_frac_alphanum
 
     return num_words_good and mean_word_len_good and ellipsis_good and alphanum_good
+
+#### 
+def simple_pipeline(text, english_cutoff = 0.8, word_ran = (50, 100_000), mean_word_len_ran = (3, 10), max_frac_ellipsis = 0.3, min_frac_alphanum = 0.8):
+    """
+    Test if text is english, is not NSFW, is not hatespeech, and passes gopher
+    If it fails, return None
+    If it passes, mask email, phone, IP and return
+    """
+
+    ## Check simple filters
+    if not is_english(text, english_cutoff): return "NOT_ENGLISH"
+    if get_is_nsfw(text, with_conf = False): return "NSFW"
+    if get_is_hatespeech(text, with_conf = False): return "HATESPEECH"
+    if not check_gopher_good(text, word_ran, mean_word_len_ran, max_frac_ellipsis, min_frac_alphanum): return "BAD_GOPHER"
+
+    # Mask everything
+    text, _ = mask_ip(text)
+    text, _ = mask_phone(text)
+    text, _ = mask_emails(text)
+
+    return text
 
 ####
 ## TODO: Implement quality classifier using wikipedia links & fasttext
@@ -177,7 +227,7 @@ We want to cluster our documents into a potentially smaller number of similar cl
 So, the output should be a subset of the documents
 
 We use Jaccard similarity. Let S(d_1), S(d_2) be the bag of n-grams. 
-The Jaccard similarity is |S(d_1) \cap S(d_2)| / |S(d_1) \cup S(d_2)|
+The Jaccard similarity is |S(d_1) cap S(d_2)| / |S(d_1) cup S(d_2)|
 
 We approximate Jaccard similarity using minhashing. 
 We use k random hash functions h_1, ..., h_k. 
@@ -191,7 +241,7 @@ We represent a document the sequence of k numbers
 For a given hash function h, what is the probability h(d_1) = h(d_2)? 
 Let 
 A = number of n-grams in d_1 / d_2 
-B = number of n-grams in d_1 \cap d_2 
+B = number of n-grams in d_1 cap d_2 
 C = number of n-grams in d_2 / d_1
 Then h(d_1) = h(d_2) if the h(d_1) and h(d_2) are both achieved on B, and 
 most likely this dominates the probability that h(d_1) = h(d_2).
