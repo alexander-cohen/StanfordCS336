@@ -1,7 +1,13 @@
 ####
 ## extract text from html bytes file ## 
-
+import shutil
+import random
+import itertools
+import string
+import sys
 import resiliparse.extract.html2text
+import unicodedata
+import mmh3
 
 def extract_text_from_warc_bytes(doc_bytes):
     try: 
@@ -15,7 +21,7 @@ def extract_text_from_warc_bytes(doc_bytes):
 ## identify language using fasttext classifier ##
 
 import fasttext
-lang_detect_model = fasttext.load_model("local-shared-data/classifiers/lid.176.bin")
+lang_detect_model = fasttext.load_model("/Users/alexandercohen/Developer/CS336-Spring-2026/assignments/assignment4-data/local-shared-data/classifiers/lid.176.bin")
 
 def identify_language(text):
     stripped = text.replace("\n", " ").strip()
@@ -58,8 +64,8 @@ def mask_ip(str):
 ## classify NSFW and hatespeech using fasttext classifiers ## 
 
 import fasttext
-nsfw_model = fasttext.load_model("local-shared-data/classifiers/dolma_fasttext_nsfw_jigsaw_model.bin")
-hatespeech_model = fasttext.load_model("local-shared-data/classifiers/dolma_fasttext_hatespeech_jigsaw_model.bin")
+nsfw_model = fasttext.load_model("/Users/alexandercohen/Developer/CS336-Spring-2026/assignments/assignment4-data/local-shared-data/classifiers/dolma_fasttext_nsfw_jigsaw_model.bin")
+hatespeech_model = fasttext.load_model("/Users/alexandercohen/Developer/CS336-Spring-2026/assignments/assignment4-data/local-shared-data/classifiers/dolma_fasttext_hatespeech_jigsaw_model.bin")
 
 def get_is_nsfw(text, with_conf = True):
     stripped = text.replace('\n', ' ').strip()
@@ -177,7 +183,7 @@ We want to cluster our documents into a potentially smaller number of similar cl
 So, the output should be a subset of the documents
 
 We use Jaccard similarity. Let S(d_1), S(d_2) be the bag of n-grams. 
-The Jaccard similarity is |S(d_1) \cap S(d_2)| / |S(d_1) \cup S(d_2)|
+The Jaccard similarity is |S(d_1) cap S(d_2)| / |S(d_1) cup S(d_2)|
 
 We approximate Jaccard similarity using minhashing. 
 We use k random hash functions h_1, ..., h_k. 
@@ -198,5 +204,185 @@ most likely this dominates the probability that h(d_1) = h(d_2).
 
 The probability that this holds is ~ B/(A+B+C) = Jaccard similarity of d_1, d_2
 
-To make the computation more tractable, we only test for Jaccard similarity 
+(This is the Minhash part)
+
+To make the computation more tractable, we only test for Jaccard similarity between documents that completely agree on a few of their minhashes. 
+This is the locally sensative hashing part. 
+We split up our set of k minhashes into b bands containing r minhashes each, with k = br
+We cluster hashes into the same bucket if they have the same minhashes in some band
+
+We test all pairs of documents that appear in the same bucket. 
+We compute the true Jaccard similarity (not the approximation using minhash)
+
+Then, we draw a graph by connecting two documents if they have high enough Jaccard similarity. We use connected components in this graph. 
+We randomly remove all but one document in each cluster to get a list of representative documents. 
 """
+all_accents = "".join(chr(i) for i in range(sys.maxunicode) if unicodedata.combining(chr(i)))
+to_remove = string.punctuation + all_accents
+remove_punctuation_and_accents = str.maketrans('', '', to_remove)
+
+def normalize(text):
+    """ 
+    Lowercase, remove punctuation, normalize whitespaces, remove accents, apply NFD unicode normalization
+    """
+    nfd = unicodedata.normalize('NFD', text) # unicode normalization to NFD
+    nfd = nfd.lower() # lowercase
+    nfd = nfd.translate(remove_punctuation_and_accents) # remove punctuation
+    nfd = " ".join(nfd.split()) # normalize whitespace to one space
+
+    return nfd
+
+def hash_ngram(ng, seed):
+    return mmh3.hash("|".join(ng).encode("utf-8"), seed, signed = False)
+
+def make_maxhashes(doc, k, n):
+    """
+    Create k-many n-gram minhash
+    Assume doc is already normalized 
+    """
+
+    words = doc.split()
+    maxhash = np.array([0 for _ in range(k)])
+    for ng in nltk.ngrams(words, n):
+        hashes = np.array([hash_ngram(ng, i) for i in range(k)])
+        maxhash = np.maximum(maxhash, hashes)
+
+    return maxhash
+
+
+def make_ngram_set(doc, n):
+    words = doc.split()
+    return set(nltk.ngrams(words, n))
+
+def jaccard(S1, S2):
+    """compute jaccard similarity between two sets"""
+    intersection = S1.intersection(S2)
+    union = S1.union(S2)
+
+    A = len(intersection)
+    B = len(union)
+    return A / B if B != 0 else 0
+
+
+def get_jac_similar(docs, n, jac_cutoff):
+    """return pairs of indices of docs with jac similar > jac_cutoff"""
+    ngram_sets = [make_ngram_set(doc, n) for doc in docs]
+    edges = []
+    for i1, i2 in itertools.pairwise(range(len(ngram_sets))):
+        jac = jaccard(ngram_sets[i1], ngram_sets[i2])
+        if jac >= jac_cutoff: 
+            edges.append((i1, i2))
+
+    return edges
+
+def make_clusters(n, edges):
+    """
+    edges is a list of pairs in 0...(n-1)
+    we iteratively merge any pair in edges to lead to some number of clusters
+    """
+
+    # unique index describing the connected component of each document
+    # we start with each documents cluster being its index
+    cluster_ind = list(range(n))
+
+    def get_cluster_ind(i):
+        if cluster_ind[i] == i:
+            return i
+        else:
+            return get_cluster_ind(cluster_ind[i])
+
+    # merge indices one-by-one
+    # at the end of merging, cluster_ind[i] = i' where i' <= i,
+    # and i' and i are in the same cluster.
+    for i1, i2 in edges:
+        a = get_cluster_ind(i1)
+        b = get_cluster_ind(i2)
+        c = min(a,b)
+        d = max(a,b)
+        cluster_ind[d] = c
+
+    for j in range(n):
+        cluster_ind[j] = get_cluster_ind(j)
+
+    distinct_vals = set(cluster_ind)
+    groups = {v: [] for v in distinct_vals}
+    for j in range(n):
+        groups[cluster_ind[j]].append(j)
+
+    return list(groups.values())
+
+
+def fuzzy_document_deduplication(input_paths, # a list of documents to deduplify, 
+                                 output_dir,
+                                 k, # num hashes total 
+                                 b, # num bands 
+                                 n, # use n-grams
+                                 jac_cutoff = 0.8): # documents with > jac_cutoff Jaccard similarity are combined in one group
+    """ 
+    Follow the procedure described above to perform fuzzy document deduplicaation 
+    Rewrite files to the output dir that are selected representatives of their connected component
+    Text will be normalized before computations
+    """
+
+    assert( k % b == 0 )
+    r = k // b # num hashes per band
+
+    def get_doc(fname):
+        with open(fname, "r") as f:
+            doc = f.read()
+        
+        return doc
+
+    num_docs = len(input_paths)
+    maxhashes = np.array([make_maxhashes(get_doc(fname), k, n) for fname in input_paths]) # d x k array 
+
+    edges = []
+
+    ## For each block, make buckets based on minhashes in that block. 
+    ## For each bucket, compute true Jaccard similarity scores
+    ## Add an edge whenever two documents are similar
+    for block in range(b):
+        inds = range( block * r, (block+1)*r )
+        distinct_inds = {}
+        unique_rows, inv = np.unique(maxhashes[:,inds], return_inverse = True, axis = 0)
+        for j in range(num_docs):
+            if inv[j] in distinct_inds:
+                distinct_inds[inv[j]].append(j)
+            else:
+                distinct_inds[inv[j]] = [j]
+
+        for inds in distinct_inds.values():
+            ## compute jaccard distance for every pair in inds
+
+            pairs = get_jac_similar([get_doc(input_paths[i]) for i in inds], n, jac_cutoff)
+            for i1, i2 in pairs:
+                edges.append((inds[i1], inds[i2]))
+
+
+    
+    doc_groups = make_clusters(num_docs, edges)
+
+    rep_docs = [random.choice(group) for group in doc_groups]
+
+    ## Write representative docs to output path
+    for d in rep_docs:
+        fname = input_paths[d]
+        new_file = Path(output_dir) / Path(fname).name
+        shutil.copy(fname, new_file)
+
+
+
+
+
+
+
+if __name__ == "__main__":
+    input_paths = [f"/Users/alexandercohen/Developer/CS336-Spring-2026/assignments/assignment4-data/test_docs_jaccard/test_docs_in/d{j}.txt" for j in range(1,6)]
+    output_dir = "/Users/alexandercohen/Developer/CS336-Spring-2026/assignments/assignment4-data/test_docs_jaccard/test_docs_out"
+
+    k = 4
+    b = 2
+    n = 2
+    jac_cutoff = 0.8
+
+    fuzzy_document_deduplication(input_paths, output_dir, k, b, n, jac_cutoff)
