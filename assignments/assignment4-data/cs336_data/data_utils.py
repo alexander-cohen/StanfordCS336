@@ -4,9 +4,24 @@
 import resiliparse.extract.html2text
 from fastwarc.warc import ArchiveIterator, WarcRecordType
 
+## load fasttext classifiers
 
 ## Depends on the machine
 CLASSIFIER_DIR = "/scratch/ac6074/cs336-a4-data/classifiers"
+
+# import fasttext
+# lang_detect_model = fasttext.load_model(f"{CLASSIFIER_DIR}/lid.176.bin")
+# nsfw_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_nsfw_jigsaw_model.bin")
+# hatespeech_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_hatespeech_jigsaw_model.bin")
+
+import re 
+EMAIL_REGEX = r"""[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"""
+PHONE_REGEX = r"""(?:\+?\d{1,3}[-. ]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})""" 
+IP_REGEX = r"""(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)""" 
+
+# COMPILED_EMAIL_REGEX = re.compile(EMAIL_REGEX)
+# COMPILED_PHONE_REGEX = re.compile(PHONE_REGEX)
+# COMPILED_IP_REGEX = re.compile(IP_REGEX)
 
 ## 
 ## 
@@ -39,8 +54,6 @@ def extract_text_from_warc_bytes(doc_bytes):
 ####
 ## identify language using fasttext classifier ##
 
-import fasttext
-lang_detect_model = fasttext.load_model(f"{CLASSIFIER_DIR}/lid.176.bin")
 
 def identify_language(text):
     stripped = text.replace("\n", " ").strip()
@@ -57,14 +70,7 @@ def is_english(text, english_cutoff = 0.80):
 ####
 ## mask email, phone, and IP using regex ## 
 
-import re 
-EMAIL_REGEX = r"""[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"""
-PHONE_REGEX = r"""(?:\+?\d{1,3}[-. ]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})""" 
-IP_REGEX = r"""(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)""" 
 
-COMPILED_EMAIL_REGEX = re.compile(EMAIL_REGEX)
-COMPILED_PHONE_REGEX = re.compile(PHONE_REGEX)
-COMPILED_IP_REGEX = re.compile(IP_REGEX)
 
 def sub(str, regexp, sub):
     start_count = str.count(sub)
@@ -85,10 +91,6 @@ def mask_ip(str):
 
 ####
 ## classify NSFW and hatespeech using fasttext classifiers ## 
-
-import fasttext
-nsfw_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_nsfw_jigsaw_model.bin")
-hatespeech_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_hatespeech_jigsaw_model.bin")
 
 def get_is_nsfw(text, with_conf = True):
     stripped = text.replace('\n', ' ').strip()
