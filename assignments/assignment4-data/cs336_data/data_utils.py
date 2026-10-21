@@ -132,6 +132,8 @@ def check_gopher_good(text, word_ran = (50, 100_000), mean_word_len_ran = (3, 10
 ## TODO: Implement quality classifier using wikipedia links & fasttext
 
 
+
+
 ### 
 ## Exact line deduplication ## 
 
@@ -268,7 +270,7 @@ def get_jac_similar(docs, n, jac_cutoff):
     """return pairs of indices of docs with jac similar > jac_cutoff"""
     ngram_sets = [make_ngram_set(doc, n) for doc in docs]
     edges = []
-    for i1, i2 in itertools.pairwise(range(len(ngram_sets))):
+    for i1, i2 in itertools.combinations(range(len(ngram_sets)), 2):
         jac = jaccard(ngram_sets[i1], ngram_sets[i2])
         if jac >= jac_cutoff: 
             edges.append((i1, i2))
@@ -289,7 +291,9 @@ def make_clusters(n, edges):
         if cluster_ind[i] == i:
             return i
         else:
-            return get_cluster_ind(cluster_ind[i])
+            id = get_cluster_ind(cluster_ind[i])
+            cluster_ind[i] = id
+            return id
 
     # merge indices one-by-one
     # at the end of merging, cluster_ind[i] = i' where i' <= i,
