@@ -3,25 +3,29 @@
 
 import resiliparse.extract.html2text
 from fastwarc.warc import ArchiveIterator, WarcRecordType
+import nltk
+import numpy as np
+
 
 ## load fasttext classifiers
 
 ## Depends on the machine
 CLASSIFIER_DIR = "/scratch/ac6074/cs336-a4-data/classifiers"
 
-# import fasttext
-# lang_detect_model = fasttext.load_model(f"{CLASSIFIER_DIR}/lid.176.bin")
-# nsfw_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_nsfw_jigsaw_model.bin")
-# hatespeech_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_hatespeech_jigsaw_model.bin")
+import fasttext
+lang_detect_model = fasttext.load_model(f"{CLASSIFIER_DIR}/lid.176.bin")
+nsfw_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_nsfw_jigsaw_model.bin")
+hatespeech_model = fasttext.load_model(f"{CLASSIFIER_DIR}/dolma_fasttext_hatespeech_jigsaw_model.bin")
 
 import re 
 EMAIL_REGEX = r"""[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"""
 PHONE_REGEX = r"""(?:\+?\d{1,3}[-. ]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})""" 
 IP_REGEX = r"""(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)""" 
 
-# COMPILED_EMAIL_REGEX = re.compile(EMAIL_REGEX)
-# COMPILED_PHONE_REGEX = re.compile(PHONE_REGEX)
-# COMPILED_IP_REGEX = re.compile(IP_REGEX)
+COMPILED_EMAIL_REGEX = re.compile(EMAIL_REGEX)
+COMPILED_PHONE_REGEX = re.compile(PHONE_REGEX)
+COMPILED_IP_REGEX = re.compile(IP_REGEX)
+
 
 ## 
 ## 
@@ -123,9 +127,6 @@ def get_is_hatespeech(text, with_conf = True):
 # - Mean word length in [3, 10] chars
 # - Remove doc if >30% of lines end with ellipsis ...
 # - Remove doc is <80% of words contain at least one alphabetic character
-
-import nltk
-import numpy as np
 
 ## Check if document passes simple gopher quality test
 
@@ -252,3 +253,4 @@ The probability that this holds is ~ B/(A+B+C) = Jaccard similarity of d_1, d_2
 
 To make the computation more tractable, we only test for Jaccard similarity 
 """
+
