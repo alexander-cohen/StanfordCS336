@@ -55,4 +55,4 @@ def run_minhash_deduplication(
     jaccard_threshold: float,
     output_directory: os.PathLike,
 ):
-    raise NotImplementedError
+    return cs336_data.data_utils.fuzzy_document_deduplication(input_files, output_directory, num_hashes, num_bands, ngrams, jaccard_threshold)
