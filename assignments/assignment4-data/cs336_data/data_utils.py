@@ -8,6 +8,36 @@ import sys
 import resiliparse.extract.html2text
 import unicodedata
 import mmh3
+from fastwarc.warc import ArchiveIterator, WarcRecordType
+
+import re 
+EMAIL_REGEX = r"""[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"""
+PHONE_REGEX = r"""(?:\+?\d{1,3}[-. ]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})""" 
+IP_REGEX = r"""(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)""" 
+
+COMPILED_EMAIL_REGEX = re.compile(EMAIL_REGEX)
+COMPILED_PHONE_REGEX = re.compile(PHONE_REGEX)
+COMPILED_IP_REGEX = re.compile(IP_REGEX)
+
+## 
+## 
+def warc_text_iterator(file_path): 
+    """
+    Make an iterator over WARC entries, returning the entry along with extracted plain text using resiliparse
+    Use as for entry, parsed_text in warc_text_iterator()
+    yields entry, warc_txt
+    """
+    with open(file_path, "rb") as f:
+        it = ArchiveIterator(f)
+        for entry in it:
+            if entry.headers.get("Content-Type", "NONE") in ["application/http; msgtype=response", "application/http;msgtype=response"]: continue
+            try: 
+                warc_str = entry.reader.read().decode()
+                warc_txt = resiliparse.extract.html2text.extract_plain_text(warc_str).strip()
+                if len(warc_txt) == 0: continue
+                yield entry, warc_txt
+            except UnicodeDecodeError:
+                continue
 
 def extract_text_from_warc_bytes(doc_bytes):
     try: 
@@ -31,17 +61,14 @@ def identify_language(text):
     return lan[-2:], conf
 
 
+def is_english(text, english_cutoff = 0.80):
+    lang, conf = identify_language(text)
+    return lang == "en" and conf >= english_cutoff
+
 ####
 ## mask email, phone, and IP using regex ## 
 
-import re 
-EMAIL_REGEX = r"""[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"""
-PHONE_REGEX = r"""(?:\+?\d{1,3}[-. ]?)?\(?([0-9]{3})\)?[-. ]?([0-9]{3})[-. ]?([0-9]{4})""" 
-IP_REGEX = r"""(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)""" 
 
-COMPILED_EMAIL_REGEX = re.compile(EMAIL_REGEX)
-COMPILED_PHONE_REGEX = re.compile(PHONE_REGEX)
-COMPILED_IP_REGEX = re.compile(IP_REGEX)
 
 def sub(str, regexp, sub):
     start_count = str.count(sub)
@@ -75,7 +102,7 @@ def get_is_nsfw(text, with_conf = True):
     if with_conf:
         return pred , conf
     else:
-        return pred
+        return pred == 'nsfw'
 
 def get_is_hatespeech(text, with_conf = True):
     stripped = text.replace('\n', ' ').strip()
@@ -85,7 +112,7 @@ def get_is_hatespeech(text, with_conf = True):
     if with_conf:
         return pred , conf
     else:
-        return pred
+        return pred == 'hatespeech'
 
 
 
@@ -127,6 +154,27 @@ def check_gopher_good(text, word_ran = (50, 100_000), mean_word_len_ran = (3, 10
     alphanum_good = percent_alphanum >= min_frac_alphanum
 
     return num_words_good and mean_word_len_good and ellipsis_good and alphanum_good
+
+#### 
+def simple_pipeline(text, english_cutoff = 0.8, word_ran = (50, 100_000), mean_word_len_ran = (3, 10), max_frac_ellipsis = 0.3, min_frac_alphanum = 0.8):
+    """
+    Test if text is english, is not NSFW, is not hatespeech, and passes gopher
+    If it fails, return None
+    If it passes, mask email, phone, IP and return
+    """
+
+    ## Check simple filters
+    if not is_english(text, english_cutoff): return "NOT_ENGLISH"
+    if get_is_nsfw(text, with_conf = False): return "NSFW"
+    if get_is_hatespeech(text, with_conf = False): return "HATESPEECH"
+    if not check_gopher_good(text, word_ran, mean_word_len_ran, max_frac_ellipsis, min_frac_alphanum): return "BAD_GOPHER"
+
+    # Mask everything
+    text, _ = mask_ip(text)
+    text, _ = mask_phone(text)
+    text, _ = mask_emails(text)
+
+    return text
 
 ####
 ## TODO: Implement quality classifier using wikipedia links & fasttext
@@ -199,7 +247,7 @@ We represent a document the sequence of k numbers
 For a given hash function h, what is the probability h(d_1) = h(d_2)? 
 Let 
 A = number of n-grams in d_1 / d_2 
-B = number of n-grams in d_1 \cap d_2 
+B = number of n-grams in d_1 cap d_2 
 C = number of n-grams in d_2 / d_1
 Then h(d_1) = h(d_2) if the h(d_1) and h(d_2) are both achieved on B, and 
 most likely this dominates the probability that h(d_1) = h(d_2).
