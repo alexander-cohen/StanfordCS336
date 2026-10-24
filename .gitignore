@@ -4,3 +4,7 @@
 **/__pycache__/
 *.pyc/assignments/assignment2-systems/profiles/fsdp/*/fsdp_rank*.json
 /assignments/assignment2-systems/results/ddp_compare_*/traces/
+assignments/assignment4-data/uv.lock
+*/uv.lock
+assignments/assignment4-data/make_quality_classifier/quality_classifier.bin
+assignments/assignment4-data/uv.lock
