@@ -145,7 +145,7 @@ def run_training_loop(
 
 
 def vllm_test():
-    vllm_server = vllm_utils.VLLMServer(model_id = checkpoint.OLMO)
+    vllm_server = vllm_utils.VLLMServer(gpu = 0, model_id = checkpoint.OLMO)
     vllm_server.start()
 
     sampling_params = {
