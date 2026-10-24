@@ -142,4 +142,22 @@ def run_training_loop(
                             eps = 1e-8,
                             weight_decay = training_hyperparameters.weight_decay)
 
-    
+
+
+def vllm_test():
+    vllm_server = vllm_utils.VLLMServer(model_id = checkpoint.OLMO)
+    vllm_server.start()
+
+    sampling_params = {
+        "temperature": 1.0, 
+        "max_tokens": 100
+    }
+
+    res = vllm_server.generate_completions(["first prompt: hello world!", "second prompt: my name is alex, "], sampling_params)
+
+    print("Results:")
+    for c in res:
+        print(c.text)
+
+if __name__ == "__main__":
+    vllm_test()
