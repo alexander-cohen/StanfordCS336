@@ -95,6 +95,7 @@ def compute_rollout_rewards(
         reward_fn: Callable[[str, str], dict[str, float]], 
         rollout_responses: list[str], 
         repeated_ground_truths: list[str], 
+        device = None
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """
     Helper funciton that computes rewards for a list of rollout responses, along with metadata for the reward components
@@ -114,7 +115,7 @@ def compute_rollout_rewards(
     mean_raw_reward = np.mean(raw_reward)
     mean_format_reward = np.mean(format_reward)
 
-    return torch.tensor(raw_reward, dtype=torch.float32), {"mean_reward": mean_raw_reward, "mean_format_reward": mean_format_reward}
+    return torch.tensor(raw_reward, dtype=torch.float32, device=device), {"mean_reward": mean_raw_reward, "mean_format_reward": mean_format_reward}
 
 def compute_group_normalized_rewards_grpo(
         raw_rewards: torch.Tensor, 
@@ -250,7 +251,7 @@ def grpo_train_step(
         old_log_probs: torch.Tensor | None = None,
         cliprange: float | None = None,
         loss_normalization: Literal["sequence", "constant"] = "sequence",
-        normalization_constant: int | None = None,
+        normalization_constant: int | None = None
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
     """
     Perform one optimizer step using gradient accumulation over rollout microbatches.
@@ -290,15 +291,22 @@ def grpo_train_step(
     assert(normalization_constant == None)
     n_prompts_per_rollout_batch = rollout_batch_size // group_size
 
+    device = next(model.parameters()).device
+
     ## get rewards from rollouts
-    raw_rewards, rewards_metadata = compute_rollout_rewards(reward_fn, rollout_responses, repeated_ground_truths)
+    raw_rewards, rewards_metadata = compute_rollout_rewards(reward_fn, rollout_responses, repeated_ground_truths, device)
+    raw_rewards = raw_rewards.to(device)
 
     ## get group normalized rewards
     advantages, advantages_metadata = compute_group_normalized_rewards_grpo(raw_rewards, group_size, baseline, advantage_eps, advantage_normalizer)
+    advantages = advantages.to(device)
 
     ## get tokenization of prompts and responses
     tokenization_res = tokenizer_prompt_and_output(repeated_prompts, rollout_responses, tokenizer)
     input_ids, labels, response_mask = tokenization_res.values()
+    input_ids = input_ids.to(device)
+    labels = labels.to(device)
+    response_mask = response_mask.to(device)
 
     ## compute gradient over several microbatches
     microbatch_size = rollout_batch_size // gradient_accumulation_steps
